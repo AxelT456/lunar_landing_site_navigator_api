@@ -60,3 +60,20 @@ def test_get_nearby_psrs_invalid_limit(client: TestClient) -> None:
     params = {"lat": -89.0, "lon": 0.0, "limit": 0}
     response = client.get("/api/v1/psr/nearby", params=params)
     assert response.status_code == 422
+
+
+def test_nearby_psrs_uses_real_projection_for_non_contract_sites(client: TestClient) -> None:
+    """Sites adjacent to a reference PSR must find it first (no contract overrides)."""
+    cases = [
+        ((-87.40, 354.5), 41),  # Haworth Crater Rim -> Haworth
+        ((-87.30, 77.0), 35),  # Faustini Rim A -> Faustini
+    ]
+    for (lat, lon), expected_gid in cases:
+        response = client.get(
+            "/api/v1/psr/nearby", params={"lat": lat, "lon": lon, "radius_km": 25.0}
+        )
+        assert response.status_code == 200
+        psrs = response.json()["psrs"]
+        assert psrs, (lat, lon)
+        assert psrs[0]["gid"] == expected_gid
+        assert psrs[0]["distance_km"] < 10.0
