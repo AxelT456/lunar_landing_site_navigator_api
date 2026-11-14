@@ -1,0 +1,25 @@
+# Local PostGIS seeded with the shared reference data (landing sites + LOLA PSRs).
+# Usage: docker compose -f docker-compose.dev.yml up -d
+# See db/README.md for details and how to reload the seed.
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: spaceapps-postgres-dev
+    environment:
+      POSTGRES_DB: spaceapps
+      POSTGRES_USER: spaceapps
+      POSTGRES_PASSWORD: spaceapps_local
+    ports:
+      # Bound to localhost only: never expose the DB on the event Wi-Fi.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - spaceapps-pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spaceapps -d spaceapps"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  spaceapps-pgdata:
