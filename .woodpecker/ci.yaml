@@ -20,6 +20,8 @@ steps:
   - name: test
     image: python:3.12-slim
     commands:
+      # libexpat1: runtime dependency of the rasterio (GDAL) wheel, as in the Dockerfile.
+      - DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libexpat1 >/dev/null
       - python -m venv .venv
       - .venv/bin/pip install --quiet -r requirements.txt
       - .venv/bin/python -m pytest -q
@@ -42,6 +44,7 @@ steps:
     environment:
       DATABASE_URL: postgresql://spaceapps:ci@ci-postgis:5432/spaceapps
     commands:
+      - DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libexpat1 >/dev/null
       - .venv/bin/python scripts/contract_check.py
 
   - name: build
