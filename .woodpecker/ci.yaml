@@ -6,20 +6,45 @@ when:
   # deploy.yaml depends on this workflow, so it must also run on promotions.
   - event: deployment
 
+# Throwaway PostGIS loaded with db/init (the same seed developers use), so the
+# contract gate runs the real queries. The password only exists inside this pipeline.
+services:
+  - name: ci-postgis
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: spaceapps
+      POSTGRES_USER: spaceapps
+      POSTGRES_PASSWORD: ci
+
 steps:
   - name: test
     image: python:3.12-slim
     commands:
+      # libexpat1: runtime dependency of the rasterio (GDAL) wheel, as in the Dockerfile.
+      - DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libexpat1 >/dev/null
       - python -m venv .venv
       - .venv/bin/pip install --quiet -r requirements.txt
       - .venv/bin/python -m pytest -q
 
-  # Contract v1.1 gate (P-001 ErrorResponse, P-003 lat [-90, 90]). Reported here
-  # but not blocking; deploy.yaml makes it blocking for production.
+  - name: seed-db
+    image: postgis/postgis:16-3.4
+    environment:
+      PGPASSWORD: ci
+    commands:
+      - for i in $(seq 1 60); do pg_isready -q -h ci-postgis -U spaceapps && break; sleep 1; done
+      # Same order as docker-entrypoint-initdb.d: every db/init file, sorted by name.
+      - for f in db/init/*; do case "$$f" in *.sql.gz) gzip -dc "$$f" ;; *.sql) cat "$$f" ;; esac | psql -v ON_ERROR_STOP=1 -q -h ci-postgis -U spaceapps -d spaceapps || exit 1; done
+      - psql -h ci-postgis -U spaceapps -d spaceapps -Atc "select count(*) from landing_sites"
+
+  # Contract v1.1 gate (P-001 ErrorResponse, P-003 lat [-90, 90], sites from the DB).
+  # Blocking: deploy.yaml depends on this workflow, so neither staging nor
+  # production ship if it fails.
   - name: contract
     image: python:3.12-slim
-    failure: ignore
+    environment:
+      DATABASE_URL: postgresql://spaceapps:ci@ci-postgis:5432/spaceapps
     commands:
+      - DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libexpat1 >/dev/null
       - .venv/bin/python scripts/contract_check.py
 
   - name: build

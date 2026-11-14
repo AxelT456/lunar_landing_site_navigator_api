@@ -6,6 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# libexpat1: runtime dependency of the rasterio (GDAL) wheel on slim images.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --prefer-binary -r /app/requirements.txt

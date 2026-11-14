@@ -1,1 +1,1 @@
-"""Lunar Landing Site Navigator API package."""
+"""Lunar Landing Site Navigator backend package."""

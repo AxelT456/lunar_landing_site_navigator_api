@@ -1,9 +1,9 @@
 # Deploy (Woodpecker CI → desktop)
 
 ```
-PR ──────────────► ci: pytest · contract (report only) · docker build (dry run) ──► GitHub check ci/woodpecker/pr/ci
+PR ──────────────► ci: pytest · seed PostGIS · contract (blocking) · docker build (dry run) ──► GitHub check ci/woodpecker/pr/ci
 merge to main ───► ci ──► deploy: staging ──► smoke tests
-Deploy/promote ──► ci ──► contract gate (blocking) ──► deploy: production ──► smoke tests + public health
+Deploy/promote ──► ci ──► deploy: production ──► smoke tests + public health
 ```
 
 | Environment | Trigger | Container (network `spaceapps-net`) | Access |
@@ -20,9 +20,11 @@ with `403 repo does not allow deployments`.
 - Woodpecker UI → repository → pipeline of the `main` commit → **Deploy** → target `production`.
 - Or via the API (server v2.8.2): `curl -X POST -H "Authorization: Bearer $WOODPECKER_TOKEN" "$WOODPECKER_SERVER/api/repos/<repo-id>/pipelines/<number>?event=deployment&deploy_to=production"`
 
-Production only ships when `scripts/contract_check.py` passes (contract v1.1:
-`ErrorResponse`, `lat` in `[-90, 90]`, Apollo sites). Run it locally with
-`python scripts/contract_check.py`.
+Nothing ships (staging or production) unless `scripts/contract_check.py` passes
+(contract v1.1: `ErrorResponse`, `lat` in `[-90, 90]`, Apollo sites from the
+database). In CI it runs against a throwaway PostGIS service loaded with
+`db/init`. Locally: start the seed database (`db/README.md`), set `DATABASE_URL`
+and run `python scripts/contract_check.py`.
 
 ## How the deploy works
 

@@ -7,19 +7,12 @@ when:
   - event: deployment
     environment: production
 
+# The contract gate is the blocking `contract` step of ci.yaml: if it fails,
+# this workflow does not run (staging or production).
 depends_on:
   - ci
 
 steps:
-  # Production only ships if the contract gate passes.
-  - name: contract-gate
-    image: python:3.12-slim
-    when:
-      - event: deployment
-    commands:
-      - pip install --quiet -r requirements.txt
-      - python scripts/contract_check.py
-
   # The key can only run /srv/spaceapps/services/deploy/deploy-backend.sh on the
   # host (forced command), which accepts "<staging|production> <sha>" and only
   # deploys commits already merged into main, with health check and rollback.

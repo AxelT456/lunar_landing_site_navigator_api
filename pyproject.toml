@@ -7,19 +7,24 @@ name = "lunar-landing-site-navigator-api"
 version = "1.0.0"
 description = "Lunar Landing Site Navigator Backend API"
 readme = "lunar-landing-api-contract.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.110.0",
-    "uvicorn[standard]>=0.28.0",
-    "pydantic>=2.6.0",
-    "pydantic-settings>=2.2.0",
-    "numpy>=1.26.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "psycopg[binary,pool]>=3.2",
+    "numpy>=2.0",
+    "rasterio>=1.4",
+    "pyproj>=3.7",
+    "skyfield>=1.49",
+    "jplephem>=2.22",
+    "shapely>=2.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
-    "httpx>=0.27.0",
+    "pytest>=8.3",
 ]
 
 [tool.pytest.ini_options]
