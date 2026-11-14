@@ -1,0 +1,47 @@
+# Deploy to the desktop server (see docs/DEPLOY.md).
+#   push to main        -> staging    (container spaceapps-api-staging, internal only)
+#   deployment/promote  -> production (container spaceapps-api, public Cloudflare URL)
+when:
+  - event: push
+    branch: main
+  - event: deployment
+    environment: production
+
+depends_on:
+  - ci
+
+steps:
+  # Production only ships if the contract gate passes.
+  - name: contract-gate
+    image: python:3.12-slim
+    when:
+      - event: deployment
+    commands:
+      - pip install --quiet -r requirements.txt
+      - python scripts/contract_check.py
+
+  # The key can only run /srv/spaceapps/services/deploy/deploy-backend.sh on the
+  # host (forced command), which accepts "<staging|production> <sha>" and only
+  # deploys commits already merged into main, with health check and rollback.
+  - name: deploy
+    image: alpine:3.20
+    secrets: [deploy_ssh_key]
+    commands:
+      - apk add --no-cache --quiet openssh-client
+      - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+      - printf '%s\n' "$${DEPLOY_SSH_KEY}" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+      - echo '[172.21.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIORleI+T8QufN65wXHtr/PKhFbhGqfYgWqUffjWiBdEo' > ~/.ssh/known_hosts
+      - TARGET=staging; if [ "${CI_PIPELINE_EVENT}" = deployment ]; then TARGET=production; fi
+      - ssh -p 2222 -o StrictHostKeyChecking=yes -o BatchMode=yes hackaton@172.21.0.1 "$${TARGET} ${CI_COMMIT_SHA}"
+
+  - name: smoke
+    image: alpine:3.20
+    environment:
+      # Public URL lives in the handoff repo docs/07; update here if it changes.
+      PUBLIC_API_BASE: https://chart-owned-alabama-choices.trycloudflare.com/api/v1
+    commands:
+      - apk add --no-cache --quiet curl
+      - BASE=http://spaceapps-api-staging:8000/api/v1
+      - if [ "${CI_PIPELINE_EVENT}" = deployment ]; then BASE=http://spaceapps-api:8000/api/v1; fi
+      - BASE=$${BASE} sh scripts/smoke.sh
+      - if [ "${CI_PIPELINE_EVENT}" = deployment ]; then curl -fsS --max-time 30 "$${PUBLIC_API_BASE}/health" >/dev/null && echo "PASS  public health"; fi
