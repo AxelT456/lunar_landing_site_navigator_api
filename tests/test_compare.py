@@ -88,3 +88,15 @@ def test_compare_scenarios_invalid_coordinate(client: TestClient) -> None:
     }
     response = client.post("/api/v1/compare", json=payload)
     assert response.status_code == 422
+
+
+def test_compare_defaults_match_evaluate() -> None:
+    """Shared tuning params must default identically in /compare and /evaluate."""
+    from app.schemas.compare import CompareRequest
+    from app.schemas.evaluate import EvaluateRequest
+
+    for field in ("duration_days", "step_minutes", "panel_efficiency", "panel_area_m2"):
+        assert (
+            CompareRequest.model_fields[field].default
+            == EvaluateRequest.model_fields[field].default
+        ), field

@@ -8,6 +8,7 @@ from app.core.constants import (
     DEFAULT_DURATION_DAYS,
     DEFAULT_PANEL_AREA_M2,
     DEFAULT_PANEL_EFFICIENCY,
+    DEFAULT_STEP_MINUTES,
     MAX_DURATION_DAYS,
     MAX_SCENARIOS,
     MAX_STEP_MINUTES,
@@ -44,10 +45,10 @@ class CompareRequest(BaseSchema):
         description="Duration of evaluation window in days",
     )
     step_minutes: int = Field(
-        default=120,
+        default=DEFAULT_STEP_MINUTES,
         ge=MIN_STEP_MINUTES,
         le=MAX_STEP_MINUTES,
-        description="Time step resolution in minutes",
+        description=f"Time step resolution in minutes ({MIN_STEP_MINUTES} to {MAX_STEP_MINUTES})",
     )
     panel_efficiency: float = Field(
         default=DEFAULT_PANEL_EFFICIENCY,
