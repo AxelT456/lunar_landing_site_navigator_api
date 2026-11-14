@@ -13,6 +13,10 @@ Deploy/promote ──► ci ──► contract gate (blocking) ──► deploy:
 
 ## Promote to production
 
+Requires the repository setting **Allow deployments** (`allow_deploy: true`).
+Woodpecker 2.8.2 activates repositories with it off, and promotions then fail
+with `403 repo does not allow deployments`.
+
 - Woodpecker UI → repository → pipeline of the `main` commit → **Deploy** → target `production`.
 - Or via the API (server v2.8.2): `curl -X POST -H "Authorization: Bearer $WOODPECKER_TOKEN" "$WOODPECKER_SERVER/api/repos/<repo-id>/pipelines/<number>?event=deployment&deploy_to=production"`
 
@@ -36,8 +40,12 @@ Database credentials live only on the server (`/srv/spaceapps/services/backend-o
 
 ## Rollback by hand
 
-Promote an older `main` pipeline to `production`, or on the server:
+Promote an older `main` pipeline to `production` (it must pass the contract
+gate too), or on the server restore the container kept by the last promotion:
 
 ```bash
 docker rm -f spaceapps-api && docker rename spaceapps-api-prev spaceapps-api && docker start spaceapps-api
 ```
+
+Only one previous container is kept: after the first promotion it is the
+pre-CI backend started by Docker Compose.
