@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Response
 
 from app import db
 from app.models import NearbyPsrSummary, TerrainPatchResponse
@@ -64,4 +64,50 @@ def get_terrain_patch(
         center=center,
         grid=patch["grid"],
         nearby_psrs=nearby_psrs,
+    )
+
+
+# Static reference data: a tile only changes if the LOLA rasters on the server change.
+TILE_CACHE_CONTROL = "public, max-age=86400"
+
+
+@router.get(
+    "/terrain/tiles/{z}/{row}/{col}.png",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": (
+                "256x256 Terrarium PNG: elevation_m = R*256 + G + B/256 - 32768, relative to the "
+                "1,737,400 m lunar sphere. Header X-Terrain-Source names the DEM used."
+            ),
+        },
+        404: {"description": "Tile entirely north of -80 deg latitude (no polar terrain tile)"},
+        422: {"description": "z, row or col outside the tiling scheme"},
+        503: {"description": "No LOLA DEM available on the server"},
+    },
+)
+def get_terrain_tile(
+    z: int = Path(..., ge=0, description="Zoom level (0 to 9). Level 0 has 2 columns x 1 row"),
+    row: int = Path(..., ge=0, description="Tile row, 0 = north edge (0 to 2^z - 1)"),
+    col: int = Path(..., ge=0, description="Tile column, 0 starts at -180 deg (0 to 2^(z+1) - 1)"),
+) -> Response:
+    """South pole elevation tile for the globe in the Moon Trek / Cesium geographic scheme (handoff P-008).
+
+    Tiles reaching south of -80 deg are built from the LOLA polar DEM (20/40/80 m, best fit for the
+    zoom level) and filled with the global LOLA DEM outside the polar raster.
+    """
+    engine = get_engine()
+    try:
+        png, source = engine.render_terrain_tile(z, row, col)
+    except engine.TileOutOfRangeError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid tile index: {exc}") from exc
+    except engine.TileOutsideCoverageError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=f"Terrain DEM unavailable: {exc}") from exc
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": TILE_CACHE_CONTROL, "X-Terrain-Source": source},
     )

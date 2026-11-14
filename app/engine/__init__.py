@@ -10,6 +10,11 @@ from app.engine.terrain import (
     extract_terrain_patch,
     sample_point_terrain,
 )
+from app.engine.tiles import (
+    TileOutOfRangeError,
+    TileOutsideCoverageError,
+    render_terrain_tile,
+)
 
 __all__ = [
     "polar_stereographic_from_latlon",
@@ -19,4 +24,7 @@ __all__ = [
     "compute_horizon_profile",
     "evaluate_site_mission",
     "moon_center_ephemeris",
+    "render_terrain_tile",
+    "TileOutOfRangeError",
+    "TileOutsideCoverageError",
 ]
