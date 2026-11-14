@@ -1,11 +1,17 @@
 """Scenario comparison endpoint."""
 
-from fastapi import APIRouter
-from app.domain.evaluation import compute_site_evaluation
+from fastapi import APIRouter, Depends
+
+from app.domain.services.evaluator import EvaluatorService
 from app.schemas.compare import CompareRequest, CompareResponse, CompareResult
 from app.schemas.evaluate import EvaluateRequest
 
 router = APIRouter()
+
+
+def get_evaluator_service() -> EvaluatorService:
+    """Dependency provider for EvaluatorService."""
+    return EvaluatorService()
 
 
 @router.post(
@@ -14,7 +20,10 @@ router = APIRouter()
     summary="Compare Multiple Landing Scenarios",
     description="Evaluates 2 to 5 site and date combinations concurrently for trade studies.",
 )
-async def compare_scenarios(request: CompareRequest) -> CompareResponse:
+async def compare_scenarios(
+    request: CompareRequest,
+    evaluator: EvaluatorService = Depends(get_evaluator_service),
+) -> CompareResponse:
     """Run comparative analysis across given scenarios."""
     results: list[CompareResult] = []
 
@@ -28,7 +37,7 @@ async def compare_scenarios(request: CompareRequest) -> CompareResponse:
             panel_efficiency=request.panel_efficiency,
             panel_area_m2=request.panel_area_m2,
         )
-        eval_resp = compute_site_evaluation(eval_req)
+        eval_resp = evaluator.evaluate_site(eval_req)
         results.append(
             CompareResult(
                 label=sc.label,
