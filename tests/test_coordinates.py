@@ -27,3 +27,16 @@ def test_polar_stereographic_projection_scale() -> None:
     r = math.hypot(x, y)
     # Approx 10.3 km from pole
     assert 10000.0 < r < 10600.0
+
+
+def test_polar_projection_matches_lola_crs() -> None:
+    """Must match pyproj on the LOLA LDEM_80S CRS (+proj=stere +lat_0=-90 +lon_0=0 +R=1737400)."""
+    reference = [
+        (-89.66, 222.7, -6991.8, -7576.9),  # Shackleton Rim
+        (-86.04, 357.1, -6077.6, 119974.5),  # Malapert Massif (+Y = 0 E)
+        (-87.18, 84.3, 85106.2, 8494.7),  # Faustini Rim A (+X = 90 E)
+    ]
+    for lat, lon, exp_x, exp_y in reference:
+        x, y = lat_lon_to_polar_xy(lat, lon)
+        assert math.isclose(x, exp_x, abs_tol=0.2), (lat, lon)
+        assert math.isclose(y, exp_y, abs_tol=0.2), (lat, lon)

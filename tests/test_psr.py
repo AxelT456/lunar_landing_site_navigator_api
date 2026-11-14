@@ -19,8 +19,8 @@ def test_get_nearby_psrs_success(client: TestClient) -> None:
     assert "center" in data
     assert data["center"]["lat"] == -89.66
     assert data["center"]["lon"] == 222.7
-    assert data["center"]["polar_x_m"] == -6975.1
-    assert data["center"]["polar_y_m"] == 7569.4
+    assert data["center"]["polar_x_m"] == -6991.8
+    assert data["center"]["polar_y_m"] == -7576.9
     assert data["radius_km"] == 25.0
     assert "count" in data
     assert "psrs" in data
