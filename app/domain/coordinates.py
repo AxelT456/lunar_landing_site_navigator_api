@@ -16,7 +16,9 @@ def lat_lon_to_polar_xy(lat: float, lon: float) -> tuple[float, float]:
     """
     Project lunar latitude/longitude to South Pole stereographic (x, y) coordinates in meters.
 
-    Matches standard Lunar South Pole Stereographic projection (center at -90 deg lat).
+    Matches the CRS of the NASA LOLA south pole products (LDEM_80S_*, LPSR_80S_*):
+    +proj=stere +lat_0=-90 +lat_ts=-90 +lon_0=0 +R=1737400, i.e. +X toward 90 E
+    and +Y toward 0 E (the Earth-facing meridian).
     """
     # Colatitude in radians: 90 - |lat| for southern hemisphere
     colat_deg = 90.0 + lat  # since lat is negative (-90 to -80)
@@ -26,10 +28,8 @@ def lat_lon_to_polar_xy(lat: float, lon: float) -> tuple[float, float]:
     # r = 2 * R * tan(colat / 2)
     r = 2.0 * MOON_RADIUS_M * math.tan(colat_rad / 2.0)
 
-    # Standard lunar south pole orientation: X points east along 90 E, Y along 0 E
+    # South pole orientation: x = r*sin(lon), y = r*cos(lon)
     lon_rad = math.radians(lon)
-    # Using orientation matching contract sample: theta = lon - 90 deg
-    theta = lon_rad - math.pi / 2.0
-    x = round(r * math.cos(theta), 1)
-    y = round(r * math.sin(theta), 1)
+    x = round(r * math.sin(lon_rad), 1)
+    y = round(r * math.cos(lon_rad), 1)
     return x, y

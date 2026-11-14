@@ -20,8 +20,8 @@ def test_get_sites_success(client: TestClient) -> None:
     assert shackleton["category"] == "Artemis III"
     assert shackleton["lat"] == -89.66
     assert shackleton["lon"] == 222.7
-    assert shackleton["polar_x_m"] == -6975.1
-    assert shackleton["polar_y_m"] == 7569.4
+    assert shackleton["polar_x_m"] == -6991.8
+    assert shackleton["polar_y_m"] == -7576.9
     assert shackleton["elevation_m"] == 2048.5
     assert shackleton["slope_deg"] == 6.4
     assert shackleton["nearest_psr_km"] == 1.8

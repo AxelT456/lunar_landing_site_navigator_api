@@ -23,13 +23,13 @@ REFERENCE_PSRS = [
         "name": "Shackleton",
         "area_km2": 182.4,
         "center_polar_x": -6400.0,
-        "center_polar_y": 7100.0,
+        "center_polar_y": -7100.0,
         "coordinates": [
             [
                 [
-                    [-6500.0, 7200.0],
-                    [-6400.0, 7100.0],
-                    [-6500.0, 7200.0],
+                    [-6500.0, -7200.0],
+                    [-6400.0, -7100.0],
+                    [-6500.0, -7200.0],
                 ]
             ]
         ],
@@ -39,13 +39,13 @@ REFERENCE_PSRS = [
         "name": "Shoemaker",
         "area_km2": 420.0,
         "center_polar_x": 62000.0,
-        "center_polar_y": -45000.0,
+        "center_polar_y": 45000.0,
         "coordinates": [
             [
                 [
-                    [61000.0, -44000.0],
-                    [62000.0, -46000.0],
-                    [61000.0, -44000.0],
+                    [61000.0, 44000.0],
+                    [62000.0, 46000.0],
+                    [61000.0, 44000.0],
                 ]
             ]
         ],
@@ -55,13 +55,13 @@ REFERENCE_PSRS = [
         "name": "Faustini",
         "area_km2": 315.6,
         "center_polar_x": 81000.0,
-        "center_polar_y": -19000.0,
+        "center_polar_y": 19000.0,
         "coordinates": [
             [
                 [
-                    [80500.0, -18500.0],
-                    [81500.0, -19500.0],
-                    [80500.0, -18500.0],
+                    [80500.0, 18500.0],
+                    [81500.0, 19500.0],
+                    [80500.0, 18500.0],
                 ]
             ]
         ],
@@ -71,13 +71,13 @@ REFERENCE_PSRS = [
         "name": "Haworth",
         "area_km2": 510.2,
         "center_polar_x": -8000.0,
-        "center_polar_y": -77000.0,
+        "center_polar_y": 77000.0,
         "coordinates": [
             [
                 [
-                    [-8500.0, -76000.0],
-                    [-7500.0, -78000.0],
-                    [-8500.0, -76000.0],
+                    [-8500.0, 76000.0],
+                    [-7500.0, 78000.0],
+                    [-8500.0, 76000.0],
                 ]
             ]
         ],
@@ -123,12 +123,7 @@ async def get_nearby_psrs(
     ),
 ) -> PSRNearbyResponse:
     """Find permanently shadowed regions near coordinates."""
-    # Special exact match for contract sample
-    if round(lat, 2) == -89.66 and round(lon, 1) == 222.7:
-        center_x = -6975.1
-        center_y = 7569.4
-    else:
-        center_x, center_y = lat_lon_to_polar_xy(lat, lon)
+    center_x, center_y = lat_lon_to_polar_xy(lat, lon)
 
     found_psrs: list[PSRItem] = []
     for ref in REFERENCE_PSRS:

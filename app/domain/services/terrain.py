@@ -107,11 +107,7 @@ class TerrainService:
         Returns:
             TerrainPatchResponse conforming to API contract.
         """
-        if round(lat, 2) == -89.66 and round(lon, 1) == 222.7:
-            polar_x = -6975.1
-            polar_y = 7569.4
-        else:
-            polar_x, polar_y = lat_lon_to_polar_xy(lat, lon)
+        polar_x, polar_y = lat_lon_to_polar_xy(lat, lon)
         center_elev = self.dem_reader.get_elevation(lat, lon)
         center_slope = self.dem_reader.get_slope(lat, lon)
         cell_size_m = compute_cell_size(size_km, resolution)
