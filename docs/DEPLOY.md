@@ -14,7 +14,7 @@ Deploy/promote ──► ci ──► contract gate (blocking) ──► deploy:
 ## Promote to production
 
 - Woodpecker UI → repository → pipeline of the `main` commit → **Deploy** → target `production`.
-- Or: `woodpecker-cli deploy AxelT456/lunar_landing_site_navigator_api <pipeline-number> production`
+- Or via the API (server v2.8.2): `curl -X POST -H "Authorization: Bearer $WOODPECKER_TOKEN" "$WOODPECKER_SERVER/api/repos/<repo-id>/pipelines/<number>?event=deployment&deploy_to=production"`
 
 Production only ships when `scripts/contract_check.py` passes (contract v1.1:
 `ErrorResponse`, `lat` in `[-90, 90]`, Apollo sites). Run it locally with
