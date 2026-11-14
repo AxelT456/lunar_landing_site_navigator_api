@@ -296,3 +296,49 @@ def save_ephemeris_cache(cache_key: str, result: dict[str, Any]) -> None:
                 """,
                 (cache_key, _json_dumps(result)),
             )
+
+
+def list_psrs(
+    simplify_m: float = 500.0,
+    limit: int = 500,
+    offset: int = 0,
+    min_area_km2: float = 0.0,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Return (total, page) of PSR polygons ordered by gid, simplified for whole-pole views."""
+    pool = get_pool()
+    with pool.connection(timeout=5.0) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM psr_regions WHERE COALESCE(area_km2, 0) >= %s;",
+                (min_area_km2,),
+            )
+            row = cur.fetchone()
+            total = int(row["cnt"]) if row else 0
+            cur.execute(
+                """
+                SELECT
+                    p.gid,
+                    p.name,
+                    p.area_km2,
+                    ST_X(ST_PointOnSurface(p.geom)) AS label_x_m,
+                    ST_Y(ST_PointOnSurface(p.geom)) AS label_y_m,
+                    ST_AsGeoJSON(
+                        CASE
+                            WHEN %s > 0 THEN COALESCE(ST_SimplifyPreserveTopology(p.geom, %s), p.geom)
+                            ELSE p.geom
+                        END
+                    ) AS geojson
+                FROM psr_regions p
+                WHERE COALESCE(p.area_km2, 0) >= %s
+                ORDER BY p.gid ASC
+                LIMIT %s OFFSET %s;
+                """,
+                (simplify_m, simplify_m, min_area_km2, limit, offset),
+            )
+            rows = cur.fetchall()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        geojson_raw = row.pop("geojson", None)
+        row["geometry"] = json.loads(geojson_raw) if isinstance(geojson_raw, str) else geojson_raw
+        results.append(row)
+    return total, results

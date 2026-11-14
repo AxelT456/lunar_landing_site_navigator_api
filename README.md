@@ -10,6 +10,15 @@ REST API backend for evaluating and comparing lunar south pole landing sites, ca
 - **Site Evaluation (`POST /api/v1/evaluate`)**: 360° local horizon profile, solar and Earth visibility, GO/NO-GO operational heuristics, and 3D lighting vectors.
 - **Scenario Comparison (`POST /api/v1/compare`)**: Side-by-side evaluation of 2 to 5 landing scenarios.
 - **Permanently Shadowed Regions (`GET /api/v1/psr/nearby`)**: GeoJSON boundaries of nearby PSRs.
+- **PSR catalog (`GET /api/v1/psr`)**: every PSR once, paginated (`offset`, `limit` ≤ 500), simplified (`simplify_m`, default 500 m), with a label point in polar metres and lat/lon. For whole-pole views such as the globe.
+- **Moon-centered ephemeris (`GET /api/v1/ephemeris?utc=`)**: Sun and Earth direction, sub-point and distance from the Moon's center in `MOON_ME_DE421` (SPICE only; `503` without kernels).
+
+Additive changes for clients (no field removed or renamed):
+
+- `site.checks` in `/evaluate` and `/compare`: the verdict as codes (`SLOPE_*`, `SUN_*`, `DTE_*`), level (`ok`/`caution`/`nogo`), value, threshold and an English `message`. `reasons` keeps the Spanish sentences.
+- `/compare` accepts `include_timeline: true` to return each scenario's timeline.
+- `grid.source` (`lola_polar`/`lola_global`/`synthetic`) and `grid.native_resolution_m` in `/terrain/patch`; elevations rounded to 0.1 m and slopes to 0.01° (about 3x smaller payload).
+- `Cache-Control: public, max-age=3600` on successful `GET` of sites, terrain, PSR and ephemeris (never on `/health` or errors).
 
 ## Architecture
 

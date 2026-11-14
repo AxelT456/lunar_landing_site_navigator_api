@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import db
 from app.models import ErrorDetail, ErrorResponse
-from app.routers import compare, evaluate, health, psr, sites, terrain
+from app.routers import compare, ephemeris, evaluate, health, psr, sites, terrain
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,29 @@ app.add_middleware(
 )
 
 
+# GET responses that only depend on their query string and on static reference data
+# (LOLA rasters, SPICE kernels, PSR and site catalogs). Browsers and the tunnel may
+# reuse them instead of asking again on every evaluation. /health is never cached.
+CACHEABLE_GET_PATHS = frozenset(
+    f"/api/v1{path}" for path in ("/sites", "/terrain/patch", "/psr", "/psr/nearby", "/ephemeris")
+)
+CACHE_CONTROL = "public, max-age=3600"
+
+
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    """Add Cache-Control to successful GETs of static reference data."""
+    response = await call_next(request)
+    if (
+        request.method == "GET"
+        and response.status_code == 200
+        and request.url.path in CACHEABLE_GET_PATHS
+        and "cache-control" not in response.headers
+    ):
+        response.headers["Cache-Control"] = CACHE_CONTROL
+    return response
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
     """Return canonical docs/06 error object alongside Pydantic detail list."""
@@ -229,6 +252,7 @@ app.include_router(terrain.router, prefix=API_PREFIX)
 app.include_router(evaluate.router, prefix=API_PREFIX)
 app.include_router(compare.router, prefix=API_PREFIX)
 app.include_router(psr.router, prefix=API_PREFIX)
+app.include_router(ephemeris.router, prefix=API_PREFIX)
 
 
 @app.get("/", include_in_schema=False)

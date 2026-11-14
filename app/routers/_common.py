@@ -91,9 +91,12 @@ def make_ephemeris_cache_key(
     panel_efficiency: float,
     panel_area_m2: float,
 ) -> str:
-    """Build deterministic ephemeris_cache key covering all mission inputs."""
+    """Build deterministic ephemeris_cache key covering all mission inputs.
+
+    The version prefix changes whenever the cached payload changes shape (v2: `checks`).
+    """
     return (
-        f"v1|{round(lat, 4):.4f}|{round(lon, 4):.4f}|{start_utc}|"
+        f"v2|{round(lat, 4):.4f}|{round(lon, 4):.4f}|{start_utc}|"
         f"{duration_days:g}|{step_minutes}|{panel_efficiency:g}|{panel_area_m2:g}"
     )
 
@@ -202,6 +205,7 @@ def run_site_evaluation(
         "nearest_psr_km": nearest_psr_km,
         "status": mission["status"],
         "reasons": mission["reasons"],
+        "checks": mission.get("checks", []),
     }
 
     if not include_details:

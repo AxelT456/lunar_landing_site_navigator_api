@@ -51,6 +51,7 @@ def test_public_contract_exports() -> None:
         "extract_terrain_patch",
         "compute_horizon_profile",
         "evaluate_site_mission",
+        "moon_center_ephemeris",
     }
     assert expected.issubset(set(engine.__all__))
     for name in expected:
@@ -488,3 +489,40 @@ def test_real_global_apollo11_and_south_pole_multires() -> None:
     )
     assert eval_res["status"] in {"GO", "CAUTION", "NO-GO"}
     assert eval_res["summary"]["earth_visible_pct"] > 90.0
+
+
+def test_status_checks_mirror_reasons() -> None:
+    from app.engine.ephemeris import _compute_status_and_reasons
+
+    cases = [
+        ((5.0, 80.0, 60.0), "GO", ["SLOPE_SAFE", "SUN_HIGH", "DTE_AVAILABLE"]),
+        ((12.0, 40.0, 10.0), "CAUTION", ["SLOPE_MODERATE", "SUN_LIMITED", "DTE_REDUCED"]),
+        ((16.0, 10.0, 0.0), "NO-GO", ["SLOPE_CRITICAL", "SUN_CRITICAL", "DTE_NONE"]),
+    ]
+    for args, status, codes in cases:
+        got_status, reasons, checks = _compute_status_and_reasons(*args)
+        assert got_status == status
+        assert [c["code"] for c in checks] == codes
+        assert len(reasons) == len(checks)
+        levels = {c["level"] for c in checks}
+        assert ("nogo" in levels) == (status == "NO-GO")
+        assert all(c["message"] and c["unit"] in {"deg", "pct"} for c in checks)
+
+
+@requires_spice
+def test_moon_center_ephemeris_matches_site_view() -> None:
+    eph = engine.moon_center_ephemeris("2026-12-01T00:00:00Z")
+    assert eph["frame"].startswith("MOON_")
+    for body in ("sun", "earth"):
+        assert np.linalg.norm(eph[body]["direction"]) == pytest.approx(1.0, abs=1e-5)
+    # The sub-solar latitude stays within the lunar obliquity; Earth within libration.
+    assert abs(eph["sun"]["sub_lat_deg"]) < 1.7
+    assert abs(eph["earth"]["sub_lat_deg"]) < 7.0
+    assert 356_000 < eph["earth"]["distance_km"] < 407_000
+    # Seen from the south pole, the Sun's elevation is about minus the sub-solar latitude.
+    flat = [{"az_deg": az, "horizon_el_deg": -90.0} for az in range(360)]
+    site = engine.evaluate_site_mission(
+        lat=-90.0, lon=0.0, elevation_m=0.0, slope_deg=0.0, horizon_profile=flat,
+        start_utc="2026-12-01T00:00:00Z", duration_days=1.0 / 24.0, step_minutes=60,
+    )
+    assert site["timeline"][0]["sun_el_deg"] == pytest.approx(-eph["sun"]["sub_lat_deg"], abs=0.05)

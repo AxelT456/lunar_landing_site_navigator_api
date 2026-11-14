@@ -131,3 +131,90 @@ def test_terrain_patch_accepts_apollo_latitude(client: TestClient, monkeypatch: 
     grid = r.json()["grid"]
     assert grid["resolution"] == 64
     assert len(grid["elevations_m"]) == 64 * 64
+
+
+def test_cache_control_on_reference_data_only(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(db, "list_landing_sites", lambda: [dict(FAKE_SITE)])
+    assert client.get("/api/v1/sites").headers.get("cache-control") == "public, max-age=3600"
+    assert "cache-control" not in client.get("/api/v1/health").headers
+    # Errors are never cached.
+    assert "cache-control" not in client.get("/api/v1/terrain/patch", params={"lat": 95, "lon": 0}).headers
+
+
+def test_terrain_patch_reports_source_and_rounds(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(db, "get_nearby_psrs", lambda **_: [])
+    grid = client.get("/api/v1/terrain/patch", params={**SHACKLETON, "resolution": 64}).json()["grid"]
+    # No datasets in DATA_DIR: synthetic fallback, no native posting to report.
+    assert grid["source"] == "synthetic"
+    assert grid["native_resolution_m"] is None
+    assert all(round(v, 1) == v for v in grid["elevations_m"][:200])
+
+
+def test_psr_catalog_is_paginated_with_label_points(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    def fake_list(**kwargs):
+        calls.append(kwargs)
+        row = {k: v for k, v in FAKE_PSR.items() if k != "distance_km"}
+        return 1531, [{**row, "label_x_m": -6991.8, "label_y_m": -7576.9}]
+
+    monkeypatch.setattr(db, "list_psrs", fake_list)
+    r = client.get("/api/v1/psr", params={"offset": 500, "limit": 500})
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["total"], body["offset"], body["limit"], body["count"]) == (1531, 500, 500, 1)
+    assert body["simplify_m"] == 500.0
+    point = body["psrs"][0]["label_point"]
+    assert point["lat"] == pytest.approx(-89.66, abs=0.01)
+    assert point["lon"] == pytest.approx(222.7, abs=0.05)
+    assert calls[0] == {"simplify_m": 500.0, "limit": 500, "offset": 500, "min_area_km2": 0.0}
+
+
+def test_psr_catalog_limit_is_capped(client: TestClient) -> None:
+    r = client.get("/api/v1/psr", params={"limit": 501})
+    assert r.status_code == 422
+    assert _error_code(r.json()) == "ERR_INVALID_PAYLOAD"
+
+
+def test_ephemeris_needs_spice_kernels(client: TestClient) -> None:
+    r = client.get("/api/v1/ephemeris", params={"utc": "2026-12-01T00:00:00Z"})
+    assert r.status_code == 503
+    assert _error_code(r.json()) == "ERR_UPSTREAM_SERVICE"
+
+
+def test_ephemeris_date_range(client: TestClient) -> None:
+    r = client.get("/api/v1/ephemeris", params={"utc": "2051-01-01T00:00:00Z"})
+    assert r.status_code == 422
+    assert _error_code(r.json()) == "ERR_DATE_OUT_OF_RANGE"
+
+
+def test_compare_include_timeline(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.routers.compare as compare_router
+
+    seen: list[bool] = []
+
+    def fake_eval(**kwargs):
+        seen.append(kwargs["include_details"])
+        site = {"lat": kwargs["lat"], "lon": kwargs["lon"], "elevation_m": 0.0, "slope_deg": 1.0,
+                "nearest_psr_km": None, "status": "GO", "reasons": [], "checks": []}
+        summary = {"sun_visible_pct": 90.0, "earth_visible_pct": 50.0, "max_continuous_sun_hours": 10.0,
+                   "max_continuous_dte_hours": 5.0, "avg_power_factor": 0.5, "estimated_peak_power_w": 100.0}
+        point = {"timestamp_utc": kwargs["start_utc"], "sun_az_deg": 0.0, "sun_el_deg": 1.0,
+                 "sun_horizon_el_deg": 0.0, "sun_visible": True, "sun_vector_3d": [0.0, 0.0, -1.0],
+                 "earth_az_deg": 0.0, "earth_el_deg": 1.0, "earth_horizon_el_deg": 0.0, "earth_visible": True,
+                 "earth_vector_3d": [0.0, 0.0, -1.0], "power_factor": 1.0}
+        out = {"site": site, "summary": summary}
+        if kwargs["include_details"]:
+            out |= {"horizon_profile": [], "timeline": [point]}
+        return out
+
+    monkeypatch.setattr(compare_router, "run_site_evaluation", fake_eval)
+    scenarios = [
+        {"label": "A", **SHACKLETON, "start_utc": "2026-12-01T00:00:00Z"},
+        {"label": "B", "lat": -85.0, "lon": 0.0, "start_utc": "2026-12-01T00:00:00Z"},
+    ]
+    plain = client.post("/api/v1/compare", json={"scenarios": scenarios}).json()
+    assert all(r["timeline"] is None for r in plain["results"])
+    full = client.post("/api/v1/compare", json={"scenarios": scenarios, "include_timeline": True}).json()
+    assert all(len(r["timeline"]) == 1 for r in full["results"])
+    assert seen == [False, False, True, True]

@@ -436,41 +436,78 @@ def _find_next_set(
     return None, None
 
 
+def _check(code: str, level: str, value: float, threshold: float | None, unit: str, message: str) -> dict[str, Any]:
+    """Machine-readable verdict check; `message` is English for display (UI language)."""
+    return {
+        "code": code,
+        "level": level,
+        "value": round(float(value), 2),
+        "threshold": threshold,
+        "unit": unit,
+        "message": message,
+    }
+
+
 def _compute_status_and_reasons(
     slope_deg: float,
     sun_visible_pct: float,
     earth_visible_pct: float,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], list[dict[str, Any]]]:
+    """Return (status, reasons, checks).
+
+    `reasons` keeps the original Spanish sentences (contract v1.1). `checks` carries
+    the same verdict as codes, levels and values so clients can render their own text.
+    Levels: "ok", "caution", "nogo".
+    """
     reasons: list[str] = []
+    checks: list[dict[str, Any]] = []
     nogo = False
     caution = False
 
     if slope_deg > 15.0:
         nogo = True
         reasons.append(f"Pendiente crítica ({slope_deg:.1f}° > 15.0° límite máximo de alunizaje)")
+        checks.append(_check("SLOPE_CRITICAL", "nogo", slope_deg, 15.0, "deg",
+                             f"Critical slope ({slope_deg:.1f}° > 15° landing limit)"))
     elif slope_deg > 10.0:
         caution = True
         reasons.append(f"Pendiente moderada ({slope_deg:.1f}° entre 10° y 15°, requiere control de descenso)")
+        checks.append(_check("SLOPE_MODERATE", "caution", slope_deg, 10.0, "deg",
+                             f"Moderate slope ({slope_deg:.1f}°, between 10° and 15°); needs descent control"))
     else:
         reasons.append(f"Pendiente segura ({slope_deg:.1f}° <= 10.0°)")
+        checks.append(_check("SLOPE_SAFE", "ok", slope_deg, 10.0, "deg",
+                             f"Safe slope ({slope_deg:.1f}° ≤ 10°)"))
 
     if sun_visible_pct < 20.0:
         nogo = True
         reasons.append(f"Iluminación solar crítica ({sun_visible_pct:.1f}% < 20% en la ventana)")
+        checks.append(_check("SUN_CRITICAL", "nogo", sun_visible_pct, 20.0, "pct",
+                             f"Critical sunlight ({sun_visible_pct:.1f}% < 20% of the window)"))
     elif sun_visible_pct < 50.0:
         caution = True
         reasons.append(f"Iluminación solar limitada ({sun_visible_pct:.1f}%) en la ventana seleccionada")
+        checks.append(_check("SUN_LIMITED", "caution", sun_visible_pct, 50.0, "pct",
+                             f"Limited sunlight ({sun_visible_pct:.1f}% of the window)"))
     else:
         reasons.append(f"Iluminación solar alta ({sun_visible_pct:.1f}%) en la ventana seleccionada")
+        checks.append(_check("SUN_HIGH", "ok", sun_visible_pct, 50.0, "pct",
+                             f"High sunlight ({sun_visible_pct:.1f}% of the window)"))
 
     if earth_visible_pct <= 0.0:
         caution = True
         reasons.append("Sin línea de vista Direct-to-Earth (0.0%); requiere satélite relay")
+        checks.append(_check("DTE_NONE", "caution", earth_visible_pct, 0.0, "pct",
+                             "No direct-to-Earth line of sight (0%); needs a relay satellite"))
     elif earth_visible_pct < 15.0:
         caution = True
         reasons.append(f"Ventana Direct-to-Earth reducida ({earth_visible_pct:.1f}% < 15%); considerar relay")
+        checks.append(_check("DTE_REDUCED", "caution", earth_visible_pct, 15.0, "pct",
+                             f"Reduced direct-to-Earth window ({earth_visible_pct:.1f}% < 15%); consider a relay"))
     else:
         reasons.append(f"Comunicación Direct-to-Earth disponible ({earth_visible_pct:.1f}%)")
+        checks.append(_check("DTE_AVAILABLE", "ok", earth_visible_pct, 15.0, "pct",
+                             f"Direct-to-Earth link available ({earth_visible_pct:.1f}% of the window)"))
 
     if nogo:
         status = "NO-GO"
@@ -479,7 +516,7 @@ def _compute_status_and_reasons(
     else:
         status = "GO"
 
-    return status, reasons
+    return status, reasons, checks
 
 
 def evaluate_site_mission(
@@ -628,13 +665,14 @@ def evaluate_site_mission(
     next_sunset_utc, hours_to_next_sunset = _find_next_set(timestamps, sun_flags, step_hours)
     next_earthset_utc, hours_to_next_earthset = _find_next_set(timestamps, earth_flags, step_hours)
 
-    status, reasons = _compute_status_and_reasons(
+    status, reasons, checks = _compute_status_and_reasons(
         slope_f, sun_visible_pct, earth_visible_pct
     )
 
     return {
         "status": status,
         "reasons": reasons,
+        "checks": checks,
         "summary": {
             "sun_visible_pct": round(float(sun_visible_pct), 2),
             "earth_visible_pct": round(float(earth_visible_pct), 2),
@@ -648,6 +686,44 @@ def evaluate_site_mission(
             "estimated_peak_power_w": round(float(peak_power_w), 2),
         },
         "timeline": timeline,
+    }
+
+
+def _body_from_moon_center(bundle: _SpiceBundle, t: Any, target: Any) -> dict[str, Any]:
+    """Apparent direction and distance of `target` seen from the Moon's center, in the lunar frame."""
+    pos_km = bundle.eph["moon"].at(t).observe(target).apparent().position.km
+    v = bundle.frame.rotation_at(t) @ np.asarray(pos_km, dtype=np.float64)
+    dist_km = float(np.linalg.norm(v))
+    u = v / dist_km
+    return {
+        "direction": [round(float(c), 6) for c in u],
+        "sub_lat_deg": round(math.degrees(math.asin(max(-1.0, min(1.0, float(u[2]))))), 4),
+        "sub_lon_deg": round(math.degrees(math.atan2(float(u[1]), float(u[0]))) % 360.0, 4),
+        "distance_km": round(dist_km, 1),
+    }
+
+
+def moon_center_ephemeris(utc: str) -> dict[str, Any]:
+    """Sun and Earth seen from the Moon's center at `utc`, in the lunar body-fixed frame.
+
+    `direction` is a unit vector in the frame's axes (+X towards lat 0, lon 0; +Z north
+    pole); `sub_lat_deg` / `sub_lon_deg` give the sub-solar and sub-Earth points (lon
+    0..360 East). Requires the local SPICE kernels: no analytical fallback, so the
+    globe never draws a made-up Sun.
+    """
+    dt = _parse_utc_datetime(utc)
+    bundle = _get_spice_bundle()
+    if bundle is None:
+        raise FileNotFoundError("SPICE kernels unavailable: moon-centered ephemeris needs local kernels")
+    with _SPICE_LOCK:
+        t = bundle.ts.from_datetime(dt)
+        sun = _body_from_moon_center(bundle, t, bundle.eph["sun"])
+        earth = _body_from_moon_center(bundle, t, bundle.eph["earth"])
+    return {
+        "utc": _format_utc_iso(dt),
+        "frame": bundle.frame_name,
+        "sun": sun,
+        "earth": earth,
     }
 
 

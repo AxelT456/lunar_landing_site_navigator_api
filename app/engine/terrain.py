@@ -730,8 +730,20 @@ def extract_terrain_patch(
     ys_local = np.linspace(half_m, -half_m, res_i, dtype=np.float64)
     gx, gy = np.meshgrid(xs_local, ys_local)
 
-    dem_ds, slope_ds, _ = _get_best_polar_datasets()
+    dem_ds, slope_ds, polar_tier = _get_best_polar_datasets()
     global_ds = _get_global_dataset()
+
+    # Which dataset the grid comes from and its native posting, so clients know when
+    # cell_size_m is finer than the data (interpolated, not real detail).
+    if center["source"] == "lola" and dem_ds is not None:
+        grid_source = "lola_polar"
+        native_resolution_m: float | None = float(polar_tier.removesuffix("MPP")) if polar_tier else None
+    elif center["source"] == "lola_global" and global_ds is not None:
+        grid_source = "lola_global"
+        native_resolution_m = round(2.0 * math.pi * MOON_RADIUS_M / float(global_ds.width), 1)
+    else:
+        grid_source = "synthetic"
+        native_resolution_m = None
 
     if center["source"] == "lola" and dem_ds is not None:
         east_xy, north_xy = local_enu_basis_in_polar(lon_norm)
@@ -795,8 +807,11 @@ def extract_terrain_patch(
             "cell_size_m": float(cell_size_m),
             "min_elevation_m": float(np.min(elev_grid)),
             "max_elevation_m": float(np.max(elev_grid)),
-            "elevations_m": [float(v) for v in elev_grid.ravel()],
-            "slopes_deg": [float(v) for v in slope_grid.ravel()],
+            # 0.1 m / 0.01 deg is far below the DEM accuracy and cuts the payload ~3x.
+            "elevations_m": [round(float(v), 1) for v in elev_grid.ravel()],
+            "slopes_deg": [round(float(v), 2) for v in slope_grid.ravel()],
+            "source": grid_source,
+            "native_resolution_m": native_resolution_m,
         },
     }
 

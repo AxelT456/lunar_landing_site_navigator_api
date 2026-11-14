@@ -84,6 +84,13 @@ class TerrainGrid(BaseModel):
     max_elevation_m: float
     elevations_m: list[float]
     slopes_deg: list[float]
+    source: Literal["lola_polar", "lola_global", "synthetic"] | None = Field(
+        default=None, description="Dataset the grid was sampled from"
+    )
+    native_resolution_m: float | None = Field(
+        default=None,
+        description="Native posting of that dataset; cells finer than this are interpolated",
+    )
 
 
 class NearbyPsrSummary(BaseModel):
@@ -125,6 +132,17 @@ class EvaluateRequest(BaseModel):
         return normalize_utc_iso(value)
 
 
+class SiteCheck(BaseModel):
+    """One verdict criterion as data, so clients can render it in their own language."""
+
+    code: str = Field(..., description="SLOPE_SAFE|SLOPE_MODERATE|SLOPE_CRITICAL|SUN_HIGH|SUN_LIMITED|SUN_CRITICAL|DTE_AVAILABLE|DTE_REDUCED|DTE_NONE")
+    level: Literal["ok", "caution", "nogo"]
+    value: float
+    threshold: float | None = None
+    unit: Literal["deg", "pct"]
+    message: str = Field(..., description="English sentence for display")
+
+
 class EvaluateSiteInfo(BaseModel):
     """Evaluated site parameters and Go/No-Go verdict."""
 
@@ -135,6 +153,9 @@ class EvaluateSiteInfo(BaseModel):
     nearest_psr_km: float | None = None
     status: MissionStatus
     reasons: list[str]
+    checks: list[SiteCheck] = Field(
+        default_factory=list, description="Same verdict as `reasons`, as codes and values (English `message`)"
+    )
 
 
 class EvaluateSummary(BaseModel):
@@ -212,6 +233,9 @@ class CompareRequest(BaseModel):
     step_minutes: int = Field(default=120, ge=5, le=1440)
     panel_efficiency: float = Field(default=0.28, gt=0.0, le=1.0)
     panel_area_m2: float = Field(default=4.0, gt=0.0, le=1000.0)
+    include_timeline: bool = Field(
+        default=False, description="Also return each scenario's timeline (as in /evaluate)"
+    )
 
     @model_validator(mode="after")
     def _validate_scenarios_bounds_and_uniqueness(self) -> "CompareRequest":
@@ -234,6 +258,9 @@ class CompareResultItem(BaseModel):
     label: str
     site: EvaluateSiteInfo
     summary: EvaluateSummary
+    timeline: list[TimelinePoint] | None = Field(
+        default=None, description="Only when the request sets include_timeline"
+    )
 
 
 class CompareResponse(BaseModel):
@@ -275,6 +302,54 @@ class PsrNearbyResponse(BaseModel):
     radius_km: float
     count: int
     psrs: list[PsrNearbyItem]
+
+
+class PsrLabelPoint(BaseModel):
+    """Point inside the PSR polygon (for pins and labels), in polar meters and degrees."""
+
+    polar_x_m: float
+    polar_y_m: float
+    lat: float
+    lon: float
+
+
+class PsrListItem(BaseModel):
+    """PSR polygon for the whole-catalog listing."""
+
+    gid: int
+    name: str | None = None
+    area_km2: float | None = None
+    label_point: PsrLabelPoint
+    geometry: PsrGeoJsonGeometry
+
+
+class PsrListResponse(BaseModel):
+    """Response payload for GET /api/v1/psr (paginated catalog)."""
+
+    total: int = Field(..., description="PSRs matching the filter (all pages)")
+    offset: int
+    limit: int
+    count: int
+    simplify_m: float
+    psrs: list[PsrListItem]
+
+
+class EphemerisBody(BaseModel):
+    """Body seen from the Moon's center in the lunar body-fixed frame."""
+
+    direction: list[float] = Field(..., min_length=3, max_length=3, description="Unit vector (+X lat 0 lon 0, +Z north pole)")
+    sub_lat_deg: float
+    sub_lon_deg: float = Field(..., description="East longitude 0..360")
+    distance_km: float
+
+
+class EphemerisResponse(BaseModel):
+    """Response payload for GET /api/v1/ephemeris."""
+
+    utc: str
+    frame: str = Field(..., description="SPICE frame of `direction` (MOON_ME_DE421)")
+    sun: EphemerisBody
+    earth: EphemerisBody
 
 
 class FileHealth(BaseModel):

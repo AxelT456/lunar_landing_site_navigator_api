@@ -10,6 +10,8 @@ server, so everyone can develop offline without Tailscale or access to the serve
 | `horizon_profiles` | Horizon cache (schema only, filled at runtime) | 0 |
 | `ephemeris_cache` | Ephemeris cache (schema only, filled at runtime) | 0 |
 
+Fixes on top of the seed live in `db/init/20_*.sql`; they run after it on new databases and are idempotent, so they can be applied once to an existing one (`psql "$DATABASE_URL" -f db/init/20_im2_lroc_site.sql`).
+
 Source: NASA LOLA / PGDA (public domain). The dump contains no roles or passwords.
 
 ## Usage

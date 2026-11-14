@@ -23,13 +23,14 @@ def compare_scenarios(payload: CompareRequest) -> CompareResponse:
             step_minutes=payload.step_minutes,
             panel_efficiency=payload.panel_efficiency,
             panel_area_m2=payload.panel_area_m2,
-            include_details=False,
+            include_details=payload.include_timeline,
         )
         results.append(
             CompareResultItem(
                 label=scenario.label,
                 site=evaluated["site"],
                 summary=evaluated["summary"],
+                timeline=evaluated.get("timeline"),
             )
         )
     return CompareResponse(results=results)
