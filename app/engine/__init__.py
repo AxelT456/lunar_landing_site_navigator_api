@@ -12,7 +12,7 @@ from app.engine.terrain import (
 )
 from app.engine.tiles import (
     TileOutOfRangeError,
-    TileOutsideCoverageError,
+    TileUnavailableError,
     render_terrain_tile,
 )
 
@@ -26,5 +26,5 @@ __all__ = [
     "moon_center_ephemeris",
     "render_terrain_tile",
     "TileOutOfRangeError",
-    "TileOutsideCoverageError",
+    "TileUnavailableError",
 ]

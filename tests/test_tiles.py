@@ -1,12 +1,12 @@
-"""South pole terrain tiles (handoff P-008): tiling scheme, Terrarium PNG and the HTTP endpoint.
+"""Lunar terrain tiles (handoff P-008): tiling scheme, Terrarium PNG, seams and the HTTP endpoint.
 
-Uses small synthetic rasters in a temporary DATA_DIR: a LOLA-style polar DEM whose elevation
-is a known plane in polar metres, and an SVS-style global DEM. No NASA datasets needed.
+Uses small synthetic rasters in a temporary DATA_DIR: LOLA-style polar DEMs (a known plane,
+or a rough surface for seam checks) and an SVS-style global DEM. No NASA datasets needed.
 """
 
 from __future__ import annotations
 
-import math
+import os
 import struct
 import zlib
 from pathlib import Path
@@ -22,17 +22,23 @@ from app.engine.coordinates import polar_stereographic_from_latlon
 from app.main import app
 
 POLAR_RES_M = 80.0
-POLAR_HALF_M = 24_000.0  # synthetic polar raster covers |x|, |y| <= 24 km (lat < about -89.2)
+POLAR_HALF_M = 24_000.0  # plane polar raster covers |x|, |y| <= 24 km (lat < about -89.2)
 GLOBAL_ELEV_M = 1200.0
 
-# z=8 tile touching the pole: lat -89.297..-90, lon 30.94..31.64, fully inside the polar raster.
+# z=8 tile touching the pole: lat -89.297..-90, lon 30.94..31.64, fully inside the plane raster.
 POLE_TILE = (8, 255, 300)
-# z=4 tile from -78.75 to -90: crosses -80 and exceeds the polar raster, so it needs the global DEM.
+# z=4 tile from -78.75 to -90: exceeds the plane raster, so it needs the global DEM.
 MIXED_TILE = (4, 15, 16)
+# z=2 tile from 0 to -45 deg: global DEM only.
+NORTH_TILE = (2, 1, 0)
 
 
 def plane_m(x: np.ndarray | float, y: np.ndarray | float) -> np.ndarray | float:
     return 500.0 + 0.002 * x - 0.001 * y
+
+
+def rough_polar_m(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    return 1000.0 + 800.0 * np.sin(x / 7000.0) * np.cos(y / 9000.0) + 300.0 * np.sin((x + y) / 2300.0)
 
 
 # ---------------------------------------------------------------- helpers
@@ -66,28 +72,38 @@ def decode_terrarium_png(data: bytes) -> np.ndarray:
     return rgb[..., 0] * 256.0 + rgb[..., 1] + rgb[..., 2] / 256.0 - 32768.0
 
 
-def write_polar_dem(data_dir: Path) -> None:
+def write_polar_dem(data_dir: Path, res_m: float = POLAR_RES_M, half_m: float = POLAR_HALF_M,
+                    surface=plane_m, name: str = "LDEM_80S_80MPP_ADJ.TIF") -> Path:
     lola = data_dir / "raw" / "lola"
     lola.mkdir(parents=True, exist_ok=True)
-    n = int(2 * POLAR_HALF_M / POLAR_RES_M)
-    centers = -POLAR_HALF_M + (np.arange(n) + 0.5) * POLAR_RES_M
+    n = int(round(2 * half_m / res_m))
+    centers = -half_m + (np.arange(n) + 0.5) * res_m
     x, y = np.meshgrid(centers, centers[::-1])  # row 0 = +Y (north-up raster)
+    path = lola / name
     with rasterio.open(
-        lola / "LDEM_80S_80MPP_ADJ.TIF", "w", driver="GTiff", height=n, width=n, count=1,
-        dtype="float32", nodata=-9999.0,
-        transform=from_origin(-POLAR_HALF_M, POLAR_HALF_M, POLAR_RES_M, POLAR_RES_M),
+        path, "w", driver="GTiff", height=n, width=n, count=1, dtype="float32", nodata=-9999.0,
+        transform=from_origin(-half_m, half_m, res_m, res_m),
     ) as dst:
-        dst.write(plane_m(x, y).astype(np.float32), 1)
+        dst.write(surface(x, y).astype(np.float32), 1)
+    return path
 
 
-def write_global_dem(data_dir: Path) -> None:
-    """SVS-style un-georeferenced float32 DEM in km relative to 1737.4 km (1 deg/px)."""
+def write_global_dem(data_dir: Path, rough: bool = False, width: int = 360) -> None:
+    """SVS-style un-georeferenced float32 DEM in km relative to 1737.4 km."""
     gdir = data_dir / "raw" / "lola_global"
     gdir.mkdir(parents=True, exist_ok=True)
+    height = width // 2
+    if rough:
+        lon = np.radians((np.arange(width) + 0.5) / width * 360.0 - 180.0)
+        lat = np.radians(90.0 - (np.arange(height) + 0.5) / height * 180.0)
+        lon_g, lat_g = np.meshgrid(lon, lat)
+        km = 1.0 + 0.9 * np.sin(7 * lon_g) * np.cos(5 * lat_g) + 0.4 * np.sin(23 * lon_g + 11 * lat_g)
+    else:
+        km = np.full((height, width), GLOBAL_ELEV_M / 1000.0)
     with rasterio.open(
-        gdir / "ldem_64.tif", "w", driver="GTiff", height=180, width=360, count=1, dtype="float32"
+        gdir / "ldem_64.tif", "w", driver="GTiff", height=height, width=width, count=1, dtype="float32"
     ) as dst:
-        dst.write(np.full((180, 360), GLOBAL_ELEV_M / 1000.0, dtype=np.float32), 1)
+        dst.write(km.astype(np.float32), 1)
 
 
 @pytest.fixture()
@@ -116,13 +132,6 @@ def test_tile_bounds_reject_out_of_range(z: int, row: int, col: int) -> None:
         tiles.tile_bounds(z, row, col)
 
 
-def test_polar_coverage_is_south_of_minus_80() -> None:
-    assert tiles.tile_in_polar_coverage(*POLE_TILE)
-    assert tiles.tile_in_polar_coverage(*MIXED_TILE)  # -78.75..-90 reaches below -80
-    assert not tiles.tile_in_polar_coverage(4, 14, 16)  # -67.5..-78.75
-    assert not tiles.tile_in_polar_coverage(2, 1, 0)  # 0..-45
-
-
 def test_vectorized_projection_matches_engine_projection() -> None:
     lat = np.array([-89.66, -85.99, -80.0])
     lon = np.array([222.7, 2.9, 77.0])
@@ -130,6 +139,13 @@ def test_vectorized_projection_matches_engine_projection() -> None:
     for i in range(3):
         ex, ey = polar_stereographic_from_latlon(float(lat[i]), float(lon[i]))
         assert x[i] == pytest.approx(ex, abs=1e-6) and y[i] == pytest.approx(ey, abs=1e-6)
+
+
+def test_decimation_factor_is_power_of_two() -> None:
+    assert tiles._decimation_factor(83.3, 80.0) == 1
+    assert tiles._decimation_factor(166.6, 80.0) == 2
+    assert tiles._decimation_factor(1333.0, 80.0) == 16
+    assert tiles._decimation_factor(2667.0, 640.0) == 4
 
 
 # ---------------------------------------------------------------- Terrarium PNG
@@ -157,7 +173,7 @@ def test_pole_tile_matches_polar_dem(data_dir: Path) -> None:
     # Bilinear interpolation of a plane is exact; only float32 storage rounds.
     assert np.max(np.abs(elev - plane_m(x, y))) < 0.01
 
-    png, _ = tiles.render_terrain_tile(*POLE_TILE)
+    png, _, _ = tiles.render_terrain_tile(*POLE_TILE)
     assert np.max(np.abs(decode_terrarium_png(png) - plane_m(x, y))) < 0.01
 
 
@@ -170,8 +186,60 @@ def test_decimated_read_matches_plane(data_dir: Path) -> None:
     xx, yy = np.meshgrid(x, y)
     col_f, row_f = (~ds.transform) * (xx, yy)
     got = tiles._sample_decimated(ds, np.asarray(col_f) - 0.5, np.asarray(row_f) - 0.5, 4, 1.0, 0.0)
-    # Averaging a plane keeps it a plane; misalignment of partial blocks stays well under 1 m.
-    assert np.max(np.abs(got - plane_m(xx, yy))) < 0.5
+    # Block averages of a plane lie on the plane, and the blocks are aligned: exact up to float32.
+    assert np.max(np.abs(got - plane_m(xx, yy))) < 0.01
+
+
+@pytest.mark.parametrize("average_max_factor", [8, 1], ids=["average", "nearest"])
+def test_point_value_does_not_depend_on_the_batch(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch, average_max_factor: int
+) -> None:
+    """Seam invariant: a point gets the same value whatever other points share the read.
+
+    Neighbouring tiles read different windows; if the decimated grid followed the window
+    they would disagree on their shared edge (review of PR #7, point 1).
+    """
+    monkeypatch.setattr(tiles, "_AVERAGE_MAX_FACTOR", average_max_factor)
+    write_polar_dem(data_dir, res_m=100.0, half_m=40_000.0, surface=rough_polar_m)
+    ds, _ = tiles._pick_polar_dataset(1000.0)
+    rng = np.random.default_rng(3)
+    probe = rng.uniform(-30_000.0, 30_000.0, size=(2, 50))
+    far = rng.uniform(-39_000.0, 39_000.0, size=(2, 400))
+
+    def sample(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        col_f, row_f = (~ds.transform) * (xs, ys)
+        return tiles._sample_decimated(ds, np.asarray(col_f) - 0.5, np.asarray(row_f) - 0.5, 8, 1.0, 0.0)
+
+    alone = sample(probe[0], probe[1])
+    with_others = sample(np.concatenate([probe[0], far[0]]), np.concatenate([probe[1], far[1]]))[:50]
+    assert np.all(np.isfinite(alone))
+    assert np.array_equal(alone, with_others)
+
+
+def test_global_dem_wraps_at_antimeridian(data_dir: Path) -> None:
+    write_global_dem(data_dir, rough=True, width=720)  # 0.5 deg/px, first/last columns at -/+179.75
+    lat = np.full(4, 10.0)
+    west, east, first_col, last_col = tiles._sample_global(lat, np.array([-179.99, 179.99, -179.75, 179.75]), z=2)
+    assert abs(first_col - last_col) > 1.0  # the two edge columns really differ
+    # 0.02 deg apart across +/-180: both blend the last and first columns almost equally.
+    # Without wrapping they would be clamped to different columns (difference = full column step).
+    assert abs(west - east) < 0.1 * abs(first_col - last_col)
+
+
+@pytest.mark.parametrize(
+    "z,row,col_a,col_b",
+    [(3, 7, 4, 5), (3, 7, 15, 0), (2, 3, 3, 4), (2, 1, 7, 0), (5, 31, 40, 41)],
+    ids=["z3", "z3-antimeridian-polar", "z2", "z2-antimeridian-global", "z5"],
+)
+def test_adjacent_tiles_have_no_seam(data_dir: Path, z: int, row: int, col_a: int, col_b: int) -> None:
+    write_polar_dem(data_dir, res_m=640.0, half_m=352_000.0, surface=rough_polar_m)
+    write_global_dem(data_dir, rough=True, width=1440)
+    a, _ = tiles.tile_elevations(z, row, col_a)
+    b, _ = tiles.tile_elevations(z, row, col_b)
+    edge = np.mean(np.abs(a[:, -1] - b[:, 0]))
+    inner = np.mean(np.abs(np.diff(a, axis=1)))
+    # A seam shows up as an edge jump several times larger than neighbouring pixels.
+    assert edge < 1.5 * inner
 
 
 def test_mixed_tile_fills_outside_polar_raster_with_global_dem(data_dir: Path) -> None:
@@ -180,32 +248,42 @@ def test_mixed_tile_fills_outside_polar_raster_with_global_dem(data_dir: Path) -
     elev, source = tiles.tile_elevations(*MIXED_TILE)
     assert source == "lola_polar_80mpp+lola_global"
     assert np.all(np.isfinite(elev))
-    # North edge of the tile (-78.75 deg) is far outside the polar raster: global value.
-    assert np.allclose(elev[0], GLOBAL_ELEV_M, atol=0.01)
-    # Last row is about 0.02 deg from the pole: polar plane values (around 500 m).
-    assert np.all(np.abs(elev[-1] - 500.0) < 60.0)
+    assert np.allclose(elev[0], GLOBAL_ELEV_M, atol=0.01)  # -78.75 deg: global
+    assert np.all(np.abs(elev[-1] - 500.0) < 60.0)  # ~0.02 deg from the pole: polar plane
 
 
-def test_global_only_when_no_polar_dem(data_dir: Path) -> None:
+def test_tile_north_of_polar_region_comes_from_global_dem(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
     write_global_dem(data_dir)
-    elev, source = tiles.tile_elevations(*POLE_TILE)
+    elev, source = tiles.tile_elevations(*NORTH_TILE)
     assert source == "lola_global"
     assert np.allclose(elev, GLOBAL_ELEV_M, atol=0.01)
 
 
+def test_gap_without_global_dem_is_unavailable(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
+    with pytest.raises(tiles.TileUnavailableError):
+        tiles.tile_elevations(*MIXED_TILE)
+
+
 def test_finer_polar_tier_is_used_at_high_zoom(data_dir: Path) -> None:
     write_polar_dem(data_dir)
-    lola = data_dir / "raw" / "lola"
-    n = int(2 * POLAR_HALF_M / 40.0)
-    with rasterio.open(
-        lola / "LDEM_80S_40MPP_ADJ.TIF", "w", driver="GTiff", height=n, width=n, count=1,
-        dtype="float32", transform=from_origin(-POLAR_HALF_M, POLAR_HALF_M, 40.0, 40.0),
-    ) as dst:
-        dst.write(np.zeros((n, n), dtype=np.float32), 1)
+    write_polar_dem(data_dir, res_m=40.0, surface=lambda x, y: np.zeros_like(x), name="LDEM_80S_40MPP_ADJ.TIF")
     assert tiles._pick_polar_dataset(tiles._tile_ground_resolution_m(9))[1] == "40MPP"  # ~42 m
     assert tiles._pick_polar_dataset(tiles._tile_ground_resolution_m(8))[1] == "80MPP"  # ~83 m
     assert tiles._pick_polar_dataset(tiles._tile_ground_resolution_m(5))[1] == "80MPP"  # coarse: cheaper read
-    assert math.isclose(tiles._tile_ground_resolution_m(8), 83.3, abs_tol=0.1)
+    assert tiles._tile_ground_resolution_m(8) == pytest.approx(83.3, abs=0.1)
+
+
+def test_replacing_a_dem_invalidates_cache_and_etag(data_dir: Path) -> None:
+    path = write_polar_dem(data_dir)
+    png1, _, etag1 = tiles.render_terrain_tile(*POLE_TILE)
+    write_polar_dem(data_dir, surface=lambda x, y: plane_m(x, y) + 100.0)
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))  # make sure mtime moves
+    png2, _, etag2 = tiles.render_terrain_tile(*POLE_TILE)
+    assert etag1 != etag2
+    assert np.allclose(decode_terrarium_png(png2) - decode_terrarium_png(png1), 100.0, atol=0.01)
 
 
 # ---------------------------------------------------------------- HTTP endpoint
@@ -219,23 +297,35 @@ def _error_code(body: dict) -> str | None:
 def test_tile_endpoint_returns_terrarium_png(data_dir: Path) -> None:
     write_polar_dem(data_dir)
     with TestClient(app) as client:
-        r = client.get("/api/v1/terrain/tiles/8/255/300.png")
+        r = client.get("/api/v1/terrain/tiles/8/255/300.png", headers={"Origin": "http://localhost:5174"})
     assert r.status_code == 200
     assert r.headers["content-type"] == "image/png"
-    assert r.headers["cache-control"] == "public, max-age=86400"
+    assert r.headers["cache-control"] == "public, max-age=3600"
     assert r.headers["x-terrain-source"] == "lola_polar_80mpp"
+    assert r.headers["etag"].startswith('"')
+    assert "x-terrain-source" in r.headers["access-control-expose-headers"].lower()
     lat, lon = tiles._tile_pixel_latlon(*POLE_TILE)
     x, y = tiles._polar_xy(lat, lon)
     assert np.max(np.abs(decode_terrarium_png(r.content) - plane_m(x, y))) < 0.01
 
 
-def test_tile_endpoint_north_of_coverage_is_404(data_dir: Path) -> None:
+def test_tile_endpoint_revalidates_with_etag(data_dir: Path) -> None:
     write_polar_dem(data_dir)
     with TestClient(app) as client:
+        first = client.get("/api/v1/terrain/tiles/8/255/300.png")
+        again = client.get("/api/v1/terrain/tiles/8/255/300.png", headers={"If-None-Match": first.headers["etag"]})
+    assert again.status_code == 304
+    assert again.content == b""
+    assert again.headers["etag"] == first.headers["etag"]
+
+
+def test_tile_endpoint_serves_tiles_north_of_the_pole(data_dir: Path) -> None:
+    write_global_dem(data_dir)
+    with TestClient(app) as client:
         r = client.get("/api/v1/terrain/tiles/2/1/0.png")
-    assert r.status_code == 404
-    assert _error_code(r.json()) == "ERR_NOT_FOUND"
-    assert "cache-control" not in r.headers
+    assert r.status_code == 200
+    assert r.headers["x-terrain-source"] == "lola_global"
+    assert np.allclose(decode_terrarium_png(r.content), GLOBAL_ELEV_M, atol=0.01)
 
 
 @pytest.mark.parametrize("path", ["10/0/0", "2/4/0", "2/0/8"])
@@ -251,3 +341,4 @@ def test_tile_endpoint_without_dem_is_503(data_dir: Path) -> None:
         r = client.get("/api/v1/terrain/tiles/8/255/300.png")
     assert r.status_code == 503
     assert _error_code(r.json()) == "ERR_TERRAIN_UNAVAILABLE"
+    assert "cache-control" not in r.headers
