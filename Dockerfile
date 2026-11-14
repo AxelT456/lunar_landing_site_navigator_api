@@ -1,8 +1,11 @@
 FROM python:3.12-slim
 
+# GDAL_CACHEMAX (MB): GDAL's block cache defaults to 5% of the host RAM. A container
+# serving terrain tiles grew from ~150 MiB to ~1 GiB; 256 MB caps that cache.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    GDAL_CACHEMAX=256
 
 WORKDIR /app
 

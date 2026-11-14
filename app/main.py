@@ -184,6 +184,8 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Let browser clients (the globe) read which DEM built a terrain tile.
+    expose_headers=["X-Terrain-Source"],
 )
 
 

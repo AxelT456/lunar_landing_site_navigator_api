@@ -12,6 +12,10 @@ REST API backend for evaluating and comparing lunar south pole landing sites, ca
 - **Permanently Shadowed Regions (`GET /api/v1/psr/nearby`)**: GeoJSON boundaries of nearby PSRs.
 - **PSR catalog (`GET /api/v1/psr`)**: every PSR once, paginated (`offset`, `limit` ≤ 500), simplified (`simplify_m`, default 500 m), with a label point in polar metres and lat/lon. For whole-pole views such as the globe.
 - **Moon-centered ephemeris (`GET /api/v1/ephemeris?utc=`)**: Sun and Earth direction, sub-point and distance from the Moon's center in `MOON_ME_DE421` (SPICE only; `503` without kernels).
+- **Lunar terrain tiles (`GET /api/v1/terrain/tiles/{z}/{row}/{col}.png`)**: 256×256 elevation tiles of the whole Moon for the globe (handoff `P-008`), in the Moon Trek / Cesium geographic scheme (level 0 = 2×1, row 0 = north, `z` 0–9), so the globe can use a single terrain source.
+  - Terrarium PNG: `elevation_m = R*256 + G + B/256 - 32768` (1/256 m), relative to the 1,737,400 m sphere like `/terrain/patch`. 16-bit PNG is not used because browsers read PNGs through an 8-bit canvas.
+  - Sources: the LOLA polar DEM that fits the zoom (40 m from `z` 9, 80 m below) where it has data, the global DEM (`ldem_64`) elsewhere. Low zoom levels read the DEMs decimated by a power of two over blocks aligned to the raster origin, so neighbouring tiles share their edges (no seams); the global DEM wraps at ±180°.
+  - Headers: `X-Terrain-Source` (exposed to browsers through CORS), `ETag` (changes when a DEM file is replaced; `If-None-Match` answers `304`) and `Cache-Control: public, max-age=3600`. `503 ERR_TERRAIN_UNAVAILABLE` if the DEMs do not cover the tile.
 
 Additive changes for clients (no field removed or renamed):
 
@@ -26,7 +30,7 @@ Built with **FastAPI**, **Pydantic v2**, **PostgreSQL + PostGIS** and NASA datas
 
 - `app/main.py`: application, unified `ErrorResponse` handlers (`ERR_*` codes) and router registration.
 - `app/routers/`: one module per endpoint; `_common.py` runs the evaluation pipeline with the PostGIS caches.
-- `app/engine/`: physics engine. LOLA DEMs (polar 20/40/80 m and global `ldem_64`), 360° horizon raycasting with lunar curvature, SPICE ephemerides via Skyfield (JPL Horizons and an analytical model as fallbacks), GO/CAUTION/NO-GO verdict.
+- `app/engine/`: physics engine. LOLA DEMs (polar 20/40/80 m and global `ldem_64`), 360° horizon raycasting with lunar curvature, SPICE ephemerides via Skyfield (JPL Horizons and an analytical model as fallbacks), GO/CAUTION/NO-GO verdict. `tiles.py` renders the globe's terrain tiles.
 - `app/db.py`: PostGIS access (`landing_sites`, `psr_regions`, `horizon_profiles`, `ephemeris_cache`).
 - `app/models.py`: request/response schemas matching `lunar-landing-api-contract.md` (v1.1).
 

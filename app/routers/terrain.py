@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Request, Response
 
 from app import db
 from app.models import NearbyPsrSummary, TerrainPatchResponse
@@ -65,3 +65,49 @@ def get_terrain_patch(
         grid=patch["grid"],
         nearby_psrs=nearby_psrs,
     )
+
+
+# Same policy as the other reference GETs (app.main): an hour, then a cheap revalidation
+# with If-None-Match. The ETag changes when a DEM file on the server is replaced.
+TILE_CACHE_CONTROL = "public, max-age=3600"
+
+
+@router.get(
+    "/terrain/tiles/{z}/{row}/{col}.png",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": (
+                "256x256 Terrarium PNG: elevation_m = R*256 + G + B/256 - 32768, relative to the "
+                "1,737,400 m lunar sphere. Header X-Terrain-Source names the DEM used."
+            ),
+        },
+        304: {"description": "Not modified (If-None-Match matches the tile ETag)"},
+        422: {"description": "z, row or col outside the tiling scheme"},
+        503: {"description": "The LOLA DEMs on the server do not cover the tile"},
+    },
+)
+def get_terrain_tile(
+    request: Request,
+    z: int = Path(..., ge=0, description="Zoom level (0 to 9). Level 0 has 2 columns x 1 row"),
+    row: int = Path(..., ge=0, description="Tile row, 0 = north edge (0 to 2^z - 1)"),
+    col: int = Path(..., ge=0, description="Tile column, 0 starts at -180 deg (0 to 2^(z+1) - 1)"),
+) -> Response:
+    """Lunar elevation tile for the globe in the Moon Trek / Cesium geographic scheme (handoff P-008).
+
+    Covers the whole Moon so the globe can use a single terrain source: the LOLA south polar
+    DEM (20/40/80 m, best fit for the zoom level) where it has data, the global LOLA DEM elsewhere.
+    """
+    engine = get_engine()
+    try:
+        png, source, etag = engine.render_terrain_tile(z, row, col)
+    except engine.TileOutOfRangeError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid tile index: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=f"Terrain DEM unavailable: {exc}") from exc
+
+    headers = {"Cache-Control": TILE_CACHE_CONTROL, "ETag": etag, "X-Terrain-Source": source}
+    if etag in [t.strip() for t in request.headers.get("if-none-match", "").split(",")]:
+        return Response(status_code=304, headers=headers)
+    return Response(content=png, media_type="image/png", headers=headers)
