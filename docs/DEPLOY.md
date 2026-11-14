@@ -36,6 +36,11 @@ The `deploy` step uses the `deploy_ssh_key` secret (events `push` and
 4. Swaps it in. In production the previous container is kept as
    `spaceapps-api-prev` and restored automatically if the new one fails.
 
+The `public-health` step (production only) checks the public URL from the
+`public_api_base` secret (event `deployment`). Create it with the current
+tunnel URL from the handoff repo `docs/07` before the first promotion, and
+update it when the tunnel changes. A failure there only warns.
+
 Database credentials live only on the server (`/srv/spaceapps/services/backend-official/.env`).
 
 ## Rollback by hand

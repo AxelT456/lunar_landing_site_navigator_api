@@ -10,7 +10,10 @@ expect() {
   name=$1
   want=$2
   shift 2
-  status=$(curl -sS -o /tmp/smoke.body -w '%{http_code}' --max-time 60 "$@" || echo 000)
+  # Truncate first so a failed request never shows the previous response body.
+  : > /tmp/smoke.body
+  # curl already prints 000 on connection errors; `|| true` keeps set -e from exiting.
+  status=$(curl -sS -o /tmp/smoke.body -w '%{http_code}' --max-time 60 "$@" || true)
   if [ "$status" = "$want" ]; then
     echo "PASS  $name ($status)"
   else

@@ -36,12 +36,21 @@ steps:
 
   - name: smoke
     image: alpine:3.20
-    environment:
-      # Public URL lives in the handoff repo docs/07; update here if it changes.
-      PUBLIC_API_BASE: https://chart-owned-alabama-choices.trycloudflare.com/api/v1
     commands:
       - apk add --no-cache --quiet curl
       - BASE=http://spaceapps-api-staging:8000/api/v1
       - if [ "${CI_PIPELINE_EVENT}" = deployment ]; then BASE=http://spaceapps-api:8000/api/v1; fi
       - BASE=$${BASE} sh scripts/smoke.sh
-      - if [ "${CI_PIPELINE_EVENT}" = deployment ]; then curl -fsS --max-time 30 "$${PUBLIC_API_BASE}/health" >/dev/null && echo "PASS  public health"; fi
+
+  # Production only. The public URL is a Cloudflare Quick Tunnel that changes on
+  # restart, so it comes from the `public_api_base` secret (single source of
+  # truth: handoff repo docs/07) and a stale URL only warns: the deploy and the
+  # internal smoke tests above already passed.
+  - name: public-health
+    image: alpine:3.20
+    when:
+      - event: deployment
+    secrets: [public_api_base]
+    commands:
+      - apk add --no-cache --quiet curl
+      - if curl -fsS --max-time 30 "$${PUBLIC_API_BASE}/health" >/dev/null; then echo "PASS  public health"; else echo "WARN  public health failed for $${PUBLIC_API_BASE}; check the tunnel URL in docs/07 and the public_api_base secret"; fi
