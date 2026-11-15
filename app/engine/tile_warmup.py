@@ -4,7 +4,8 @@ Every deploy or restart empties the in-process tile cache, so the first visitor 
 pays for rendering every tile. With TILE_WARMUP=1 each worker renders, in one low-priority
 background thread, the tiles the globe asks for first: rings around the south pole at
 every level up to TILE_WARMUP_MAX_LEVEL, heightmap and hillshade (with the globe's
-hillshade parameters). The thread starts after the app is up, never blocks requests or
+hillshade parameters; hillshade only south of its fade_start_lat, where the globe shows
+it). The thread starts after the app is up, never blocks requests or
 /health, uses one render slot at a time and skips tiles that fail.
 
 Settings (environment):
@@ -54,6 +55,30 @@ def hillshade_params(query: str) -> dict[str, float]:
     return params
 
 
+def _polar_rows(z: int, lat_limit: float, per_level: int) -> list[int]:
+    """Whole rows of level z from the south pole up to lat_limit, as many as fit in
+    per_level tiles (always at least the polar row)."""
+    n_rows, n_cols = 2**z, 2 ** (z + 1)
+    span = 180.0 / n_rows
+    rows: list[int] = []
+    for row in range(n_rows - 1, -1, -1):  # the polar row first
+        south_edge = 90.0 - (row + 1) * span
+        if south_edge > lat_limit or (rows and (len(rows) + 1) * n_cols > per_level):
+            break
+        rows.append(row)
+    return rows
+
+
+def hillshade_lat_limit(lat_limit: float, hillshade: dict[str, float] | None) -> float:
+    """Hillshade that fades out toward the north (fade_end_lat south of fade_start_lat) is
+    transparent north of fade_start_lat, and the globe does not request it there: warm it
+    only south of that latitude."""
+    start, end = (hillshade or {}).get("fade_start_lat"), (hillshade or {}).get("fade_end_lat")
+    if start is not None and end is not None and end < start:
+        return min(lat_limit, start)
+    return lat_limit
+
+
 def warmup_jobs(
     max_level: int = 7,
     per_level: int = 512,
@@ -61,23 +86,18 @@ def warmup_jobs(
     kinds: tuple[str, ...] = ("heightmap", "hillshade"),
     hillshade: dict[str, float] | None = None,
 ) -> list[Job]:
-    """Tiles to warm, coarse levels first: whole rows from the south pole up to lat_limit,
-    as many rows per level as fit in per_level tiles (always at least the polar row)."""
+    """Tiles to warm, coarse levels first: rings around the south pole up to lat_limit
+    (hillshade only where it is visible, see hillshade_lat_limit), at most per_level tiles
+    per level and product."""
     jobs: list[Job] = []
     for z in range(0, max_level + 1):
-        n_rows, n_cols = 2**z, 2 ** (z + 1)
-        span = 180.0 / n_rows
-        rows: list[int] = []
-        for row in range(n_rows - 1, -1, -1):  # the polar row first
-            south_edge = 90.0 - (row + 1) * span
-            if south_edge > lat_limit or (rows and (len(rows) + 1) * n_cols > per_level):
-                break
-            rows.append(row)
+        n_cols = 2 ** (z + 1)
         for kind in kinds:
             if z > _MAX_LEVEL[kind]:
                 continue
+            limit = hillshade_lat_limit(lat_limit, hillshade) if kind == "hillshade" else lat_limit
             extra = dict(hillshade or {}) if kind == "hillshade" else {}
-            jobs.extend((kind, z, row, col, extra) for row in rows for col in range(n_cols))
+            jobs.extend((kind, z, row, col, extra) for row in _polar_rows(z, limit, per_level) for col in range(n_cols))
     return jobs
 
 

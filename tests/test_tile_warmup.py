@@ -32,7 +32,27 @@ def test_jobs_are_polar_rings_coarse_levels_first() -> None:
     assert per_level[("heightmap", 3)] == {6, 7}  # 67.5..90 S and 45..67.5 S (crosses -60)
     count = sum(1 for kind, *_ in jobs if kind == "heightmap")
     assert count == 2 + 4 + 8 + 32 + 96 + 384 + 512 + 512
-    assert len(jobs) == 2 * count
+    assert len(jobs) - count == 2 + 4 + 8 + 16 + 32 + 128 + 384 + 512  # hillshade: only south of -83
+
+
+def test_hillshade_rows_are_the_ones_the_globe_requests() -> None:
+    # Rows the globe asked for in a recorded session (pole and ridge views): with fade_start_lat=-83
+    # the globe's hillshade layer only covers lat <= -83, and the warm-up picks exactly those rows.
+    jobs = tile_warmup.warmup_jobs(max_level=6, hillshade=FRONT)
+    rows = {}
+    for kind, z, row, _, _ in jobs:
+        if kind == "hillshade":
+            rows.setdefault(z, set()).add(row)
+    assert rows == {0: {0}, 1: {1}, 2: {3}, 3: {7}, 4: {15}, 5: {30, 31}, 6: {61, 62, 63}}
+    for _, z, row, col, _ in (j for j in jobs if j[0] == "hillshade"):
+        assert tiles.tile_bounds(z, row, col)[1] <= -83.0
+
+
+def test_hillshade_limit_follows_the_fade() -> None:
+    assert tile_warmup.hillshade_lat_limit(-60.0, FRONT) == -83.0
+    assert tile_warmup.hillshade_lat_limit(-60.0, None) == -60.0  # no fade: like the heightmap
+    assert tile_warmup.hillshade_lat_limit(-60.0, {"fade_start_lat": -85.0, "fade_end_lat": -83.0}) == -60.0  # fades toward the south
+    assert tile_warmup.hillshade_lat_limit(-88.0, FRONT) == -88.0  # the stricter of the two
 
 
 def test_jobs_respect_each_product_max_level() -> None:
