@@ -425,15 +425,38 @@ def _max_continuous_hours(flags: list[bool], step_hours: float) -> float:
     return float(best * step_hours)
 
 
+def _find_next_transition(
+    timestamps: list[str],
+    flags: list[bool],
+    step_hours: float,
+    to_visible: bool,
+) -> tuple[str | None, float | None]:
+    """First change of visibility to `to_visible` inside the window (P-012).
+
+    Returns the first sample already in the new state and the hours from the window
+    start to it, or (None, None) if that change does not happen inside the window.
+    The real event lies between that sample and the previous one (up to one step earlier).
+    """
+    for idx in range(1, len(flags)):
+        if flags[idx - 1] != to_visible and flags[idx] == to_visible:
+            return timestamps[idx], float(idx * step_hours)
+    return None, None
+
+
 def _find_next_set(
     timestamps: list[str],
     flags: list[bool],
     step_hours: float,
 ) -> tuple[str | None, float | None]:
-    for idx in range(1, len(flags)):
-        if flags[idx - 1] and not flags[idx]:
-            return timestamps[idx], float(idx * step_hours)
-    return None, None
+    return _find_next_transition(timestamps, flags, step_hours, to_visible=False)
+
+
+def _find_next_rise(
+    timestamps: list[str],
+    flags: list[bool],
+    step_hours: float,
+) -> tuple[str | None, float | None]:
+    return _find_next_transition(timestamps, flags, step_hours, to_visible=True)
 
 
 def _check(code: str, level: str, value: float, threshold: float | None, unit: str, message: str) -> dict[str, Any]:
@@ -664,6 +687,8 @@ def evaluate_site_mission(
 
     next_sunset_utc, hours_to_next_sunset = _find_next_set(timestamps, sun_flags, step_hours)
     next_earthset_utc, hours_to_next_earthset = _find_next_set(timestamps, earth_flags, step_hours)
+    next_sunrise_utc, hours_to_next_sunrise = _find_next_rise(timestamps, sun_flags, step_hours)
+    next_earthrise_utc, hours_to_next_earthrise = _find_next_rise(timestamps, earth_flags, step_hours)
 
     status, reasons, checks = _compute_status_and_reasons(
         slope_f, sun_visible_pct, earth_visible_pct
@@ -682,6 +707,12 @@ def evaluate_site_mission(
             "hours_to_next_sunset": round(hours_to_next_sunset, 2) if hours_to_next_sunset is not None else None,
             "next_earthset_utc": next_earthset_utc,
             "hours_to_next_earthset": round(hours_to_next_earthset, 2) if hours_to_next_earthset is not None else None,
+            "sun_visible_at_start": bool(sun_flags[0]) if sun_flags else False,
+            "earth_visible_at_start": bool(earth_flags[0]) if earth_flags else False,
+            "next_sunrise_utc": next_sunrise_utc,
+            "hours_to_next_sunrise": round(hours_to_next_sunrise, 2) if hours_to_next_sunrise is not None else None,
+            "next_earthrise_utc": next_earthrise_utc,
+            "hours_to_next_earthrise": round(hours_to_next_earthrise, 2) if hours_to_next_earthrise is not None else None,
             "avg_power_factor": round(float(avg_power_factor), 4),
             "estimated_peak_power_w": round(float(peak_power_w), 2),
         },

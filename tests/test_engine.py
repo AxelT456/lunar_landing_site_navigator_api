@@ -570,3 +570,23 @@ def test_moon_center_ephemeris_matches_site_view() -> None:
         start_utc="2026-12-01T00:00:00Z", duration_days=1.0 / 24.0, step_minutes=60,
     )
     assert site["timeline"][0]["sun_el_deg"] == pytest.approx(-eph["sun"]["sub_lat_deg"], abs=0.05)
+
+
+def test_rise_and_set_times_follow_first_change_in_window() -> None:
+    """P-012: null means "no such change inside the window", not "hidden at the start"."""
+    from app.engine.ephemeris import _find_next_rise, _find_next_set
+
+    ts = [f"t{i}" for i in range(6)]
+    # Visible the whole window: no set, no rise
+    assert _find_next_set(ts, [True] * 6, 1.0) == (None, None)
+    assert _find_next_rise(ts, [True] * 6, 1.0) == (None, None)
+    # Hidden at start, rises late and never sets: rise only
+    late = [False, False, False, False, True, True]
+    assert _find_next_set(ts, late, 1.0) == (None, None)
+    assert _find_next_rise(ts, late, 1.0) == ("t4", 4.0)
+    # Hidden at start, rises and sets inside the window: both have values
+    both = [False, True, True, False, False, False]
+    assert _find_next_rise(ts, both, 2.0) == ("t1", 2.0)
+    assert _find_next_set(ts, both, 2.0) == ("t3", 6.0)
+    # Never rises
+    assert _find_next_rise(ts, [False] * 6, 1.0) == (None, None)
