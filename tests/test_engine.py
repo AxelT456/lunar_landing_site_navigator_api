@@ -456,6 +456,50 @@ def test_global_dem_svs_km_cos_lat_slope_and_antimeridian(tmp_path: Path, monkey
     _clear_raster_cache()
 
 
+def test_global_dem_prefers_ldem_256_georeferenced_0_360(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_raster_cache()
+    global_dir = tmp_path / "raw" / "lola_global"
+    global_dir.mkdir(parents=True)
+
+    # Coarse SVS-style DEM: flat 1 km everywhere (must lose to ldem_256.tif)
+    with rasterio.open(
+        global_dir / "ldem_64.tif", "w", driver="GTiff", height=90, width=180, count=1, dtype="float32"
+    ) as dst:
+        dst.write(np.full((90, 180), 1.0, dtype=np.float32), 1)
+
+    # Layout written by scripts/build_global_dem.sh: geographic 0..360, int16 DN in half meters
+    H, W = 180, 360
+    lons = (np.arange(W, dtype=np.float64) + 0.5) / float(W) * 360.0
+    dn = np.broadcast_to((lons * 2.0).astype(np.int16), (H, W))  # height (m) = lon in degrees
+    with rasterio.open(
+        global_dir / "ldem_256.tif",
+        "w",
+        driver="GTiff",
+        height=H,
+        width=W,
+        count=1,
+        dtype="int16",
+        crs=CRS.from_proj4(f"+proj=longlat +R={MOON_RADIUS_M} +no_defs"),
+        transform=from_origin(0.0, 90.0, 1.0, 1.0),
+    ) as dst:
+        dst.write(dn, 1)
+        dst.scales = (0.5,)
+        dst.offsets = (0.0,)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    east = engine.sample_point_terrain(10.0, 200.5)
+    assert east["source"] == "lola_global"
+    assert math.isclose(east["elevation_m"], 200.5, abs_tol=0.6)
+    # Negative longitudes map onto 180..360
+    west = engine.sample_point_terrain(-20.0, -30.5)
+    assert math.isclose(west["elevation_m"], 329.5, abs_tol=0.6)
+
+    patch = engine.extract_terrain_patch(10.0, 200.5, size_km=40.0, resolution=16)
+    assert patch["grid"]["source"] == "lola_global"
+    assert math.isclose(patch["grid"]["native_resolution_m"], 2.0 * math.pi * MOON_RADIUS_M / W, abs_tol=0.1)
+    _clear_raster_cache()
+
+
 def test_real_global_apollo11_and_south_pole_multires() -> None:
     _clear_raster_cache()
     global_path = Path("/data/raw/lola_global/ldem_64.tif")

@@ -34,7 +34,13 @@ POLAR_TIERS: tuple[tuple[str, str, str], ...] = (
 LDEM_FILENAME = "LDEM_80S_80MPP_ADJ.TIF"
 LDSM_FILENAME = "LDSM_80S_80MPP_ADJ.TIF"
 
+# Finest first. ldem_256.tif / ldem_128.tif are LOLA GDR LDEM_256 / LDEM_128
+# (118 m / 237 m) converted by scripts/build_global_dem.sh to a georeferenced
+# 0..360 GeoTIFF with scale 0.5 m; the ldem_64 / ldem_16 / ldem_4 files are the
+# NASA SVS CGI Moon Kit TIFFs (474 m and coarser).
 GLOBAL_DEM_CANDIDATES: tuple[str, ...] = (
+    "ldem_256.tif",
+    "ldem_128.tif",
     "ldem_64.tif",
     "ldem_64_uint.tif",
     "ldem_16.tif",
