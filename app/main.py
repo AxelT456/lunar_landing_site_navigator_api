@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from contextlib import asynccontextmanager
 from typing import Any
@@ -138,18 +139,35 @@ def _classify_http_exception(status_code: int, detail: Any) -> tuple[str, str, d
     return "ERR_INVALID_PAYLOAD", msg, None
 
 
+def _start_tile_warmup():
+    """Start the tile warm-up thread if TILE_WARMUP=1. The engine is imported only then, so
+    an API without the engine's dependencies still starts (like get_engine in the routers)."""
+    if not os.environ.get("TILE_WARMUP"):
+        return None
+    try:
+        from app.engine import tile_warmup
+    except ImportError as exc:
+        logger.warning("Tile warm-up disabled: engine unavailable (%s)", exc)
+        return None
+    return tile_warmup.start_from_env()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Initialize and tear down PostgreSQL connection pool around app lifespan."""
+    """Initialize and tear down PostgreSQL connection pool around app lifespan, and start
+    the optional terrain tile warm-up (TILE_WARMUP=1) in the background."""
     try:
         db.init_pool()
     except RuntimeError as exc:
         # Without DATABASE_URL the API still starts: /health reports the database
         # as disconnected and DB-backed endpoints answer 503.
         logger.warning("Database pool not started: %s", exc)
+    warmup = _start_tile_warmup()
     try:
         yield
     finally:
+        if warmup is not None:
+            warmup[1].set()  # stops after the tile being rendered
         db.close_pool()
 
 
