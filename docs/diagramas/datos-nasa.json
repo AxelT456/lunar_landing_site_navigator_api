@@ -1,0 +1,795 @@
+{
+ "schema_version": 1,
+ "diagram_type": "dataflow",
+ "meta": {
+  "title": "Datos NASA → endpoints de la API Lunar Landing Site Navigator",
+  "locale": "es",
+  "output": "docs/diagramas/datos-nasa.html",
+  "quality_profile": "showcase",
+  "repository": {
+   "url": "https://github.com/AxelT456/lunar_landing_site_navigator_api.git",
+   "revision": "a0cf97fbce7afe285c7a43fa31c29d155c067c32"
+  }
+ },
+ "stages": [
+  {
+   "label": "Fuentes NASA"
+  },
+  {
+   "label": "Preparación y proyección"
+  },
+  {
+   "label": "Procesamiento (app/engine, PostGIS)"
+  },
+  {
+   "label": "Endpoints /api/v1"
+  },
+  {
+   "label": "Consumidores"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "demPolar",
+   "type": "external",
+   "label": "DEM polar LOLA",
+   "sublabel": "PGDA LDEM/LDSM 80S",
+   "tag": "20/40/80 m",
+   "stage": 0,
+   "row": 0,
+   "sources": [
+    {
+     "path": "app/engine/terrain.py",
+     "line": 28,
+     "end_line": 32,
+     "label": "POLAR_TIERS"
+    },
+    {
+     "path": "app/engine/terrain.py",
+     "line": 70,
+     "end_line": 81,
+     "label": "DATA_DIR/raw/lola"
+    },
+    {
+     "path": "app/engine/coordinates.py",
+     "line": 1,
+     "end_line": 13,
+     "label": "CRS polar PGDA"
+    }
+   ]
+  },
+  {
+   "id": "gdr",
+   "type": "external",
+   "label": "LOLA GDR LDEM_256",
+   "sublabel": "PDS IMG + LBL",
+   "tag": "global",
+   "stage": 0,
+   "row": 1,
+   "sources": [
+    {
+     "path": "scripts/build_global_dem.sh",
+     "line": 1,
+     "end_line": 16,
+     "label": "teselas LDEM_256"
+    }
+   ],
+   "yOffset": -23
+  },
+  {
+   "id": "spice",
+   "type": "external",
+   "label": "Kernels SPICE",
+   "sublabel": "DE421 · moon_pa · tf",
+   "tag": "NAIF",
+   "stage": 0,
+   "row": 2,
+   "sources": [
+    {
+     "path": "app/engine/ephemeris.py",
+     "line": 1,
+     "end_line": 7,
+     "label": "backends"
+    },
+    {
+     "path": "app/engine/ephemeris.py",
+     "line": 74,
+     "end_line": 86,
+     "label": "DATA_DIR/raw/spice"
+    }
+   ],
+   "yOffset": 46
+  },
+  {
+   "id": "psrSrc",
+   "type": "external",
+   "label": "PSR LOLA",
+   "sublabel": "MultiPolygon, SRID 0",
+   "tag": "1531 regiones",
+   "stage": 0,
+   "row": 3,
+   "sources": [
+    {
+     "path": "db/README.md",
+     "line": 6,
+     "end_line": 15,
+     "label": "psr_regions"
+    }
+   ],
+   "yOffset": 23
+  },
+  {
+   "id": "sitesSrc",
+   "type": "external",
+   "label": "Sitios curados",
+   "sublabel": "Artemis/CLPS/Apollo",
+   "tag": "LROC IM-2",
+   "stage": 0,
+   "row": 4,
+   "sources": [
+    {
+     "path": "db/README.md",
+     "line": 6,
+     "end_line": 8,
+     "label": "landing_sites"
+    },
+    {
+     "path": "db/init/20_im2_lroc_site.sql",
+     "line": 1,
+     "end_line": 19,
+     "label": "fix LROC IM-2"
+    }
+   ]
+  },
+  {
+   "id": "ovr",
+   "type": "database",
+   "label": "Overviews .ovr",
+   "sublabel": "<dem>.ovr, opcional",
+   "tag": "solo z bajos",
+   "stage": 1,
+   "row": 0,
+   "yOffset": -8,
+   "sources": [
+    {
+     "path": "README.md",
+     "line": 17,
+     "end_line": 17,
+     "label": "overviews externas"
+    },
+    {
+     "path": "app/engine/terrain.py",
+     "line": 114,
+     "end_line": 121,
+     "label": "reabre el DEM"
+    },
+    {
+     "path": "app/engine/tiles.py",
+     "line": 602,
+     "end_line": 617,
+     "label": "dem_signature"
+    }
+   ]
+  },
+  {
+   "id": "buildDem",
+   "type": "backend",
+   "label": "build_global_dem.sh",
+   "sublabel": "GDAL → ldem_256.tif",
+   "tag": "118 m",
+   "stage": 1,
+   "row": 1,
+   "sources": [
+    {
+     "path": "scripts/build_global_dem.sh",
+     "line": 32,
+     "end_line": 47,
+     "label": "mosaico + GeoTIFF"
+    },
+    {
+     "path": "app/engine/terrain.py",
+     "line": 37,
+     "end_line": 50,
+     "label": "GLOBAL_DEM_CANDIDATES"
+    },
+    {
+     "path": "app/engine/terrain.py",
+     "line": 84,
+     "end_line": 103,
+     "label": "busca lola_global"
+    }
+   ],
+   "yOffset": -23
+  },
+  {
+   "id": "polar",
+   "type": "backend",
+   "label": "Reproyección polar",
+   "sublabel": "estereográfica sur",
+   "tag": "R 1737.4 km",
+   "stage": 1,
+   "row": 2,
+   "sources": [
+    {
+     "path": "app/engine/coordinates.py",
+     "line": 62,
+     "end_line": 94,
+     "label": "lat/lon ↔ x,y"
+    },
+    {
+     "path": "app/engine/tiles.py",
+     "line": 158,
+     "end_line": 162,
+     "label": "_polar_xy"
+    },
+    {
+     "path": "app/routers/psr.py",
+     "line": 30,
+     "end_line": 36,
+     "label": "/psr/nearby"
+    }
+   ],
+   "yOffset": -46
+  },
+  {
+   "id": "postgis",
+   "type": "database",
+   "label": "PostGIS",
+   "sublabel": "psr_regions · landing_sites",
+   "tag": "db/init",
+   "stage": 1,
+   "row": 4,
+   "sources": [
+    {
+     "path": "db/init/00_extensions.sql",
+     "line": 1,
+     "end_line": 2,
+     "label": "extensión postgis"
+    },
+    {
+     "path": "db/README.md",
+     "line": 6,
+     "end_line": 13,
+     "label": "tablas seed"
+    },
+    {
+     "path": "app/db.py",
+     "line": 27,
+     "end_line": 40,
+     "label": "pool psycopg"
+    }
+   ]
+  },
+  {
+   "id": "tiles",
+   "type": "backend",
+   "label": "Teselas",
+   "sublabel": "terrarium · heightmap · hillshade",
+   "tag": "caché 192 MB · 4 slots",
+   "stage": 2,
+   "row": 0,
+   "sources": [
+    {
+     "path": "app/engine/tiles.py",
+     "line": 54,
+     "end_line": 64,
+     "label": "rásteres de terrain.py"
+    },
+    {
+     "path": "app/engine/tiles.py",
+     "line": 84,
+     "end_line": 90,
+     "label": "caché y concurrencia"
+    },
+    {
+     "path": "app/engine/tiles.py",
+     "line": 705,
+     "end_line": 761,
+     "label": "render_tile / _render_once"
+    }
+   ],
+   "yOffset": -8
+  },
+  {
+   "id": "terrain",
+   "type": "backend",
+   "label": "Muestreo LOLA",
+   "sublabel": "rásteres · punto · parche",
+   "tag": "polar → global",
+   "stage": 2,
+   "row": 1,
+   "sources": [
+    {
+     "path": "app/engine/terrain.py",
+     "line": 653,
+     "end_line": 711,
+     "label": "sample_point_terrain"
+    },
+    {
+     "path": "app/engine/terrain.py",
+     "line": 714,
+     "end_line": 737,
+     "label": "extract_terrain_patch"
+    }
+   ],
+   "yOffset": -23,
+   "height": 54
+  },
+  {
+   "id": "horizon",
+   "type": "backend",
+   "label": "Perfil de horizonte",
+   "sublabel": "360 rayos · 60 km",
+   "tag": "curvatura",
+   "stage": 2,
+   "row": 2,
+   "sources": [
+    {
+     "path": "app/engine/terrain.py",
+     "line": 842,
+     "end_line": 873,
+     "label": "compute_horizon_profile"
+    },
+    {
+     "path": "app/routers/_common.py",
+     "line": 139,
+     "end_line": 159,
+     "label": "caché horizon_profiles"
+    }
+   ],
+   "yOffset": -46
+  },
+  {
+   "id": "ephem",
+   "type": "backend",
+   "label": "Efemérides",
+   "sublabel": "Skyfield · veredicto",
+   "tag": "GO/CAUTION/NO-GO",
+   "stage": 2,
+   "row": 2,
+   "sources": [
+    {
+     "path": "app/engine/ephemeris.py",
+     "line": 545,
+     "end_line": 612,
+     "label": "evaluate_site_mission"
+    },
+    {
+     "path": "app/engine/ephemeris.py",
+     "line": 737,
+     "end_line": 758,
+     "label": "moon_center_ephemeris"
+    },
+    {
+     "path": "app/routers/_common.py",
+     "line": 161,
+     "end_line": 200,
+     "label": "caché ephemeris_cache"
+    }
+   ],
+   "yOffset": 46
+  },
+  {
+   "id": "psrq",
+   "type": "backend",
+   "label": "Consultas PSR",
+   "sublabel": "ST_DWithin · ST_Distance",
+   "tag": "SQL espacial",
+   "stage": 2,
+   "row": 3,
+   "sources": [
+    {
+     "path": "app/db.py",
+     "line": 139,
+     "end_line": 164,
+     "label": "get_nearest_psr_km"
+    },
+    {
+     "path": "app/db.py",
+     "line": 167,
+     "end_line": 229,
+     "label": "get_nearby_psrs"
+    },
+    {
+     "path": "app/db.py",
+     "line": 301,
+     "end_line": 344,
+     "label": "list_psrs"
+    }
+   ],
+   "yOffset": 23
+  },
+  {
+   "id": "tilesEp",
+   "type": "cloud",
+   "label": "GET /terrain/tiles/…",
+   "sublabel": ".png · heightmap .bin · hillshade",
+   "tag": "z 0–12",
+   "stage": 3,
+   "row": 0,
+   "sources": [
+    {
+     "path": "app/routers/terrain.py",
+     "line": 95,
+     "end_line": 121,
+     "label": "ETag / 304 / gzip"
+    },
+    {
+     "path": "app/routers/terrain.py",
+     "line": 124,
+     "end_line": 182,
+     "label": "terrarium + heightmap"
+    },
+    {
+     "path": "app/routers/terrain.py",
+     "line": 185,
+     "end_line": 238,
+     "label": "hillshade"
+    }
+   ],
+   "yOffset": -8
+  },
+  {
+   "id": "patchEp",
+   "type": "cloud",
+   "label": "GET /terrain/patch",
+   "sublabel": "grid + nearby_psrs",
+   "tag": "64/128/256",
+   "stage": 3,
+   "row": 1,
+   "sources": [
+    {
+     "path": "app/routers/terrain.py",
+     "line": 21,
+     "end_line": 68,
+     "label": "get_terrain_patch"
+    }
+   ],
+   "yOffset": -23
+  },
+  {
+   "id": "ephemEp",
+   "type": "cloud",
+   "label": "GET /ephemeris",
+   "sublabel": "Sol y Tierra desde el centro",
+   "tag": "solo SPICE",
+   "stage": 3,
+   "row": 2,
+   "sources": [
+    {
+     "path": "app/routers/ephemeris.py",
+     "line": 13,
+     "end_line": 34,
+     "label": "moon_center_ephemeris"
+    }
+   ],
+   "yOffset": 46
+  },
+  {
+   "id": "evalEp",
+   "type": "cloud",
+   "label": "POST /evaluate",
+   "sublabel": "y POST /compare",
+   "tag": "2–5 escenarios",
+   "stage": 3,
+   "row": 2,
+   "sources": [
+    {
+     "path": "app/routers/evaluate.py",
+     "line": 13,
+     "end_line": 26,
+     "label": "/evaluate"
+    },
+    {
+     "path": "app/routers/compare.py",
+     "line": 13,
+     "end_line": 36,
+     "label": "/compare"
+    },
+    {
+     "path": "app/routers/_common.py",
+     "line": 115,
+     "end_line": 224,
+     "label": "run_site_evaluation"
+    }
+   ],
+   "yOffset": -46,
+   "height": 64
+  },
+  {
+   "id": "psrEp",
+   "type": "cloud",
+   "label": "GET /psr",
+   "sublabel": "y /psr/nearby · GeoJSON",
+   "tag": "catálogo / radio",
+   "stage": 3,
+   "row": 3,
+   "sources": [
+    {
+     "path": "app/routers/psr.py",
+     "line": 21,
+     "end_line": 98,
+     "label": "nearby + catálogo"
+    }
+   ],
+   "yOffset": 23
+  },
+  {
+   "id": "sitesEp",
+   "type": "cloud",
+   "label": "GET /sites",
+   "sublabel": "is_curated = TRUE",
+   "tag": "catálogo",
+   "stage": 3,
+   "row": 4,
+   "sources": [
+    {
+     "path": "app/routers/sites.py",
+     "line": 18,
+     "end_line": 63,
+     "label": "list_sites"
+    },
+    {
+     "path": "app/db.py",
+     "line": 112,
+     "end_line": 136,
+     "label": "list_landing_sites"
+    }
+   ]
+  },
+  {
+   "id": "globe",
+   "type": "frontend",
+   "label": "Globo (Cesium)",
+   "sublabel": "iframe, vista global",
+   "tag": "solo teselas",
+   "stage": 4,
+   "row": 0,
+   "yOffset": -8
+  },
+  {
+   "id": "console",
+   "type": "frontend",
+   "label": "Consola",
+   "sublabel": "paneles + escena local",
+   "tag": "useMissionStore",
+   "stage": 4,
+   "row": 2,
+   "height": 414,
+   "yOffset": 48
+  }
+ ],
+ "flows": [
+  {
+   "id": "f-polar-terrain",
+   "from": "demPolar",
+   "to": "terrain",
+   "label": "GeoTIFF polar",
+   "variant": "emphasis",
+   "via": [
+    [
+     207,
+     157
+    ],
+    [
+     207,
+     198
+    ],
+    [
+     422,
+     198
+    ],
+    [
+     422,
+     246
+    ]
+   ],
+   "labelAt": [
+    315,
+    198
+   ]
+  },
+  {
+   "id": "f-gdr-build",
+   "from": "gdr",
+   "to": "buildDem",
+   "label": "IMG + LBL",
+   "variant": "dashed"
+  },
+  {
+   "id": "f-build-terrain",
+   "from": "buildDem",
+   "to": "terrain",
+   "label": "ldem_256.tif",
+   "variant": "emphasis"
+  },
+  {
+   "id": "f-proj-terrain",
+   "from": "polar",
+   "to": "terrain",
+   "label": "x, y polares"
+  },
+  {
+   "id": "f-proj-psrq",
+   "from": "polar",
+   "to": "psrq",
+   "label": "punto SRID 0"
+  },
+  {
+   "id": "f-spice-ephem",
+   "from": "spice",
+   "to": "ephem",
+   "label": "kernels locales",
+   "variant": "emphasis"
+  },
+  {
+   "id": "f-psr-seed",
+   "from": "psrSrc",
+   "to": "postgis",
+   "label": "10_seed.sql.gz",
+   "variant": "dashed"
+  },
+  {
+   "id": "f-sites-seed",
+   "from": "sitesSrc",
+   "to": "postgis",
+   "label": "seed + 20_im2",
+   "variant": "dashed"
+  },
+  {
+   "id": "f-db-psrq",
+   "from": "postgis",
+   "to": "psrq",
+   "label": "geom (GiST)"
+  },
+  {
+   "id": "f-terrain-tiles",
+   "from": "terrain",
+   "to": "tiles",
+   "label": "rásteres DEM"
+  },
+  {
+   "id": "f-ovr-tiles",
+   "from": "ovr",
+   "to": "tiles",
+   "label": "niveles reducidos"
+  },
+  {
+   "id": "f-terrain-horizon",
+   "from": "terrain",
+   "to": "horizon",
+   "label": "h0 + DEM"
+  },
+  {
+   "id": "f-horizon-ephem",
+   "from": "horizon",
+   "to": "ephem",
+   "label": "perfil 360°"
+  },
+  {
+   "id": "f-tiles-ep",
+   "from": "tiles",
+   "to": "tilesEp",
+   "label": "PNG / .bin"
+  },
+  {
+   "id": "f-terrain-patch",
+   "from": "terrain",
+   "to": "patchEp",
+   "label": "malla N×N"
+  },
+  {
+   "id": "f-terrain-eval",
+   "from": "terrain",
+   "to": "evalEp",
+   "label": "elev. + pendiente"
+  },
+  {
+   "id": "f-ephem-eval",
+   "from": "ephem",
+   "to": "evalEp",
+   "label": "veredicto"
+  },
+  {
+   "id": "f-psrq-eval",
+   "from": "psrq",
+   "to": "evalEp",
+   "label": "dist. PSR"
+  },
+  {
+   "id": "f-ephem-ep",
+   "from": "ephem",
+   "to": "ephemEp",
+   "label": "Sol y Tierra"
+  },
+  {
+   "id": "f-psrq-ep",
+   "from": "psrq",
+   "to": "psrEp",
+   "label": "polígonos"
+  },
+  {
+   "id": "f-db-sites",
+   "from": "postgis",
+   "to": "sitesEp",
+   "label": "landing_sites"
+  },
+  {
+   "id": "f-tiles-globe",
+   "from": "tilesEp",
+   "to": "globe",
+   "label": "teselas Cesium",
+   "variant": "emphasis"
+  },
+  {
+   "id": "f-patch-console",
+   "from": "patchEp",
+   "to": "console",
+   "label": "escena local"
+  },
+  {
+   "id": "f-eval-console",
+   "from": "evalEp",
+   "to": "console",
+   "label": "veredicto",
+   "variant": "emphasis"
+  },
+  {
+   "id": "f-ephem-console",
+   "from": "ephemEp",
+   "to": "console",
+   "label": "cielo global"
+  },
+  {
+   "id": "f-psr-console",
+   "from": "psrEp",
+   "to": "console",
+   "label": "capa PSR"
+  },
+  {
+   "id": "f-sites-console",
+   "from": "sitesEp",
+   "to": "console",
+   "label": "sitios"
+  },
+  {
+   "id": "f-console-globe",
+   "from": "console",
+   "to": "globe",
+   "label": "postMessage SET_*"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Prioridad de DEM",
+   "items": [
+    "Muestreo y teselas leen primero el DEM polar (20 → 40 → 80 m según disponibilidad o escala) y rellenan con el DEM global donde el polar no tiene datos",
+    "tiles.py reutiliza los lectores de rásteres de terrain.py y su propia copia vectorizada (_polar_xy) de la proyección polar",
+    "Overviews externas (<dem>.ovr) opcionales: si existen junto a un DEM, GDAL lee de ellas los z bajos de las teselas; /terrain/patch y /evaluate leen el DEM completo. El repo no incluye un script que las genere",
+    "DEM global: ldem_256.tif (118 m) generado por build_global_dem.sh; si falta, ldem_128/ldem_64 u otro TIFF en lola_global",
+    "Sin DEM en DATA_DIR, sample_point_terrain devuelve terreno sintético (source = fallback) y no se usa la caché persistente"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Efemérides y cachés",
+   "items": [
+    "evaluate usa SPICE local vía Skyfield; si falla, JPL Horizons REST y luego un modelo analítico. /ephemeris exige SPICE (503 sin kernels)",
+    "run_site_evaluation lee/escribe horizon_profiles y ephemeris_cache en PostGIS (clave v3|lat|lon|…); no dibujado como flujo",
+    "Teselas: caché LRU en proceso (TILE_CACHE_MAX_MB, 192 MB por defecto; heightmap guardado ya en gzip), hasta TILE_RENDER_CONCURRENCY (4) renders a la vez y las peticiones idénticas en vuelo comparten un render. El ETag cambia al reemplazar un DEM o su .ovr; los GET de referencia llevan Cache-Control 1 h"
+   ]
+  },
+  {
+   "dot": "violet",
+   "title": "Consumidores y alcance",
+   "items": [
+    "Reparto consola/globo tomado de los docs 11 y 12 del repo de handoff, no del código de la API",
+    "El globo solo pide /terrain/tiles, a la URL base que la consola le envía con SET_CONFIG (D-019); PSR, sitios y cielo le llegan por postMessage desde la consola",
+    "/terrain/patch también incluye hasta 25 PSR cercanas (get_nearby_psrs sin geometría); flujo omitido para no saturar el diagrama",
+    "/sites rellena elevación, pendiente y nearest_psr_km con el motor solo si faltan en la fila; /psr calcula label_point con la proyección inversa",
+    "Origen LROC: solo la coordenada del sitio IM-2 (20_im2_lroc_site.sql); los polígonos PSR del seed son de LOLA"
+   ]
+  }
+ ]
+}

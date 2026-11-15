@@ -1,0 +1,494 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Ciclo de vida de POST /api/v1/evaluate",
+    "locale": "es",
+    "output": "docs/diagramas/evaluate-secuencia.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/AxelT456/lunar_landing_site_navigator_api.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "a0cf97fbce7afe285c7a43fa31c29d155c067c32"
+    },
+    "legend": {
+      "entries": {
+        "security": {
+          "label": "Rama de error (HTTPException / ERR_*)"
+        },
+        "dashed": {
+          "label": "Caché best-effort o fallback externo"
+        }
+      }
+    }
+  },
+  "participants": [
+    {
+      "id": "cliente",
+      "type": "external",
+      "label": "Cliente (consola)",
+      "sublabel": "vía Cloudflare Quick Tunnel"
+    },
+    {
+      "id": "fastapi",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "Pydantic + handlers ERR_*",
+      "sources": [
+        {
+          "path": "app/models.py",
+          "line": 113,
+          "end_line": 132,
+          "label": "EvaluateRequest"
+        },
+        {
+          "path": "app/main.py",
+          "line": 41,
+          "end_line": 138,
+          "label": "clasificación ERR_*"
+        },
+        {
+          "path": "app/main.py",
+          "line": 215,
+          "end_line": 247,
+          "label": "exception handlers"
+        }
+      ]
+    },
+    {
+      "id": "router",
+      "type": "backend",
+      "label": "Router /evaluate",
+      "sublabel": "run_site_evaluation",
+      "sources": [
+        {
+          "path": "app/routers/evaluate.py",
+          "line": 13,
+          "end_line": 26,
+          "label": "POST /evaluate"
+        },
+        {
+          "path": "app/routers/_common.py",
+          "line": 45,
+          "end_line": 61,
+          "label": "get_engine → 503"
+        },
+        {
+          "path": "app/routers/_common.py",
+          "line": 115,
+          "end_line": 224,
+          "label": "orquestación y cachés"
+        }
+      ]
+    },
+    {
+      "id": "terreno",
+      "type": "backend",
+      "label": "Motor de terreno",
+      "sublabel": "DEM LOLA (GeoTIFF)",
+      "sources": [
+        {
+          "path": "app/engine/terrain.py",
+          "line": 653,
+          "end_line": 711,
+          "label": "sample_point_terrain"
+        },
+        {
+          "path": "app/engine/terrain.py",
+          "line": 842,
+          "end_line": 948,
+          "label": "compute_horizon_profile"
+        },
+        {
+          "path": "app/engine/coordinates.py",
+          "line": 51,
+          "end_line": 59,
+          "label": "validate_lat_lon"
+        }
+      ]
+    },
+    {
+      "id": "postgis",
+      "type": "database",
+      "label": "PostGIS",
+      "sublabel": "psr_regions + cachés",
+      "sources": [
+        {
+          "path": "app/db.py",
+          "line": 139,
+          "end_line": 164,
+          "label": "get_nearest_psr_km"
+        },
+        {
+          "path": "app/db.py",
+          "line": 232,
+          "end_line": 266,
+          "label": "horizon_profiles"
+        },
+        {
+          "path": "app/db.py",
+          "line": 269,
+          "end_line": 298,
+          "label": "ephemeris_cache"
+        }
+      ]
+    },
+    {
+      "id": "efemerides",
+      "type": "backend",
+      "label": "Motor de efemérides",
+      "sublabel": "Skyfield + SPICE",
+      "sources": [
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 545,
+          "end_line": 622,
+          "label": "SPICE → Horizons → analítico"
+        },
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 624,
+          "end_line": 720,
+          "label": "visibilidad, potencia, resumen"
+        },
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 474,
+          "end_line": 542,
+          "label": "checks y veredicto"
+        }
+      ]
+    },
+    {
+      "id": "horizons",
+      "type": "external",
+      "label": "JPL Horizons",
+      "sublabel": "API HTTP (fallback)",
+      "sources": [
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 224,
+          "end_line": 315,
+          "label": "consulta Horizons"
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 158,
+      "to": 349,
+      "label": "1 · Validación del request"
+    },
+    {
+      "from": 361,
+      "to": 603,
+      "label": "2 · Terreno del sitio y PSR"
+    },
+    {
+      "from": 615,
+      "to": 855,
+      "label": "3 · Horizonte 360° (DEM LOLA)"
+    },
+    {
+      "from": 867,
+      "to": 1121,
+      "label": "4 · Geometría Sol/Tierra (SPICE)"
+    },
+    {
+      "from": 1133,
+      "to": 1398,
+      "label": "5 · Resumen, checks y veredicto"
+    },
+    {
+      "from": 1410,
+      "to": 1542,
+      "label": "6 · Errores del motor"
+    }
+  ],
+  "messages": [
+    {
+      "id": "post-evaluate",
+      "from": "cliente",
+      "to": "fastapi",
+      "y": 170,
+      "label": "POST /evaluate {lat, lon, start_utc, …}",
+      "variant": "emphasis"
+    },
+    {
+      "id": "validacion-falla",
+      "from": "fastapi",
+      "to": "cliente",
+      "y": 200,
+      "label": "400 / 422 error de validación (ERR_*)",
+      "variant": "security",
+      "note": "ERR_INVALID_PAYLOAD: JSON inválido o campo faltante (400) · ERR_INVALID_COORDINATES: lat/lon (422) · ERR_DATE_OUT_OF_RANGE: año fuera de 1900–2050 (422)"
+    },
+    {
+      "id": "request-valido",
+      "from": "fastapi",
+      "to": "router",
+      "y": 317,
+      "label": "EvaluateRequest válido",
+      "note": "lon normalizada a [0, 360); start_utc a ISO-8601 Z"
+    },
+    {
+      "id": "muestrear-terreno",
+      "from": "router",
+      "to": "terreno",
+      "y": 404,
+      "label": "sample_point_terrain(lat, lon)",
+      "note": "DEM polar 20/40/80 m → DEM global → terreno sintético (source = fallback)"
+    },
+    {
+      "id": "terreno-ok",
+      "from": "terreno",
+      "to": "router",
+      "y": 486,
+      "label": "elevation_m, slope_deg, polar x/y, source",
+      "variant": "return"
+    },
+    {
+      "id": "psr-cercano",
+      "from": "router",
+      "to": "postgis",
+      "y": 516,
+      "label": "PSR más cercano (ST_Distance)",
+      "note": "si la BD falla: nearest_psr_km = null, solo warning"
+    },
+    {
+      "id": "psr-km",
+      "from": "postgis",
+      "to": "router",
+      "y": 587,
+      "label": "nearest_psr_km | null",
+      "variant": "return"
+    },
+    {
+      "id": "leer-horizonte",
+      "from": "router",
+      "to": "postgis",
+      "y": 633,
+      "label": "leer horizon_profiles[lat,lon]",
+      "note": "solo si source ≠ fallback; un error de BD cuenta como miss"
+    },
+    {
+      "id": "horizonte-cache",
+      "from": "postgis",
+      "to": "router",
+      "y": 704,
+      "label": "perfil | miss",
+      "variant": "return"
+    },
+    {
+      "id": "calcular-horizonte",
+      "from": "router",
+      "to": "terreno",
+      "y": 734,
+      "label": "compute_horizon_profile (si miss)",
+      "variant": "emphasis",
+      "note": "360 rayos de 60 km con curvatura lunar sobre el DEM LOLA"
+    },
+    {
+      "id": "horizonte-perfil",
+      "from": "terreno",
+      "to": "router",
+      "y": 805,
+      "label": "horizon_profile[360]",
+      "variant": "return"
+    },
+    {
+      "id": "guardar-horizonte",
+      "from": "router",
+      "to": "postgis",
+      "y": 835,
+      "label": "UPSERT horizon_profiles",
+      "variant": "dashed"
+    },
+    {
+      "id": "leer-efemerides",
+      "from": "router",
+      "to": "postgis",
+      "y": 881,
+      "label": "leer ephemeris_cache[v3|…]"
+    },
+    {
+      "id": "efemerides-cache",
+      "from": "postgis",
+      "to": "router",
+      "y": 911,
+      "label": "misión | miss",
+      "variant": "return"
+    },
+    {
+      "id": "evaluar-mision",
+      "from": "router",
+      "to": "efemerides",
+      "y": 941,
+      "label": "evaluate_site_mission (si miss)",
+      "variant": "emphasis",
+      "note": "Sol y Tierra con kernels SPICE locales (de421, moon_pa, moon_080317.tf)"
+    },
+    {
+      "id": "consulta-horizons",
+      "from": "efemerides",
+      "to": "horizons",
+      "y": 1023,
+      "label": "consulta Horizons (fallback)",
+      "variant": "dashed",
+      "note": "solo si SPICE no está o falla; si Horizons falla → modelo analítico"
+    },
+    {
+      "id": "horizons-azel",
+      "from": "horizons",
+      "to": "efemerides",
+      "y": 1105,
+      "label": "az/el Sol y Tierra",
+      "variant": "return"
+    },
+    {
+      "id": "mision-resultado",
+      "from": "efemerides",
+      "to": "router",
+      "y": 1151,
+      "label": "status, reasons, checks, summary, timeline",
+      "variant": "return",
+      "note": "visible = elevación > horizonte; % Sol/Tierra y potencia. NO-GO: pendiente > 15° o Sol < 20%. CAUTION: pendiente > 10°, Sol < 50% o DTE < 15%. Si no, GO"
+    },
+    {
+      "id": "guardar-efemerides",
+      "from": "router",
+      "to": "postgis",
+      "y": 1268,
+      "label": "UPSERT ephemeris_cache",
+      "variant": "dashed"
+    },
+    {
+      "id": "respuesta-armada",
+      "from": "router",
+      "to": "fastapi",
+      "y": 1298,
+      "label": "EvaluateResponse",
+      "note": "site {status, reasons, checks, nearest_psr_km} + summary + horizon_profile + timeline"
+    },
+    {
+      "id": "respuesta-200",
+      "from": "fastapi",
+      "to": "cliente",
+      "y": 1380,
+      "label": "200 JSON · GO / CAUTION / NO-GO",
+      "variant": "return"
+    },
+    {
+      "id": "error-motor",
+      "from": "router",
+      "to": "fastapi",
+      "y": 1426,
+      "label": "HTTPException 422 / 503",
+      "variant": "security",
+      "note": "ValueError del motor → 422; motor no importable o FileNotFoundError → 503"
+    },
+    {
+      "id": "error-respuesta",
+      "from": "fastapi",
+      "to": "cliente",
+      "y": 1508,
+      "label": "422 ERR_INVALID_COORDINATES · 503 ERR_UPSTREAM_SERVICE",
+      "variant": "security",
+      "note": "código según palabras del detail; ERR_TERRAIN_UNAVAILABLE si menciona lola/dem/terrain"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "fastapi",
+      "from": 166,
+      "to": 321,
+      "type": "backend"
+    },
+    {
+      "participant": "router",
+      "from": 262,
+      "to": 1430,
+      "type": "backend"
+    },
+    {
+      "participant": "terreno",
+      "from": 371,
+      "to": 490,
+      "type": "backend"
+    },
+    {
+      "participant": "postgis",
+      "from": 512,
+      "to": 591,
+      "type": "database"
+    },
+    {
+      "participant": "postgis",
+      "from": 625,
+      "to": 708,
+      "type": "database"
+    },
+    {
+      "participant": "terreno",
+      "from": 730,
+      "to": 809,
+      "type": "backend"
+    },
+    {
+      "participant": "postgis",
+      "from": 877,
+      "to": 915,
+      "type": "database"
+    },
+    {
+      "participant": "efemerides",
+      "from": 937,
+      "to": 1155,
+      "type": "backend"
+    },
+    {
+      "participant": "horizons",
+      "from": 995,
+      "to": 1109,
+      "type": "external"
+    },
+    {
+      "participant": "fastapi",
+      "from": 1296,
+      "to": 1512,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Camino feliz",
+      "items": [
+        "El request trae lat/lon; no hay búsqueda por id de sitio: el 'sitio' es el muestreo de terreno en ese punto",
+        "Con caché caliente (source ≠ fallback) el horizonte y la misión salen de PostGIS sin recalcular",
+        "El veredicto GO / CAUTION / NO-GO se calcula solo con pendiente, % de Sol y % de Tierra (DTE)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Degradación sin error",
+      "items": [
+        "PostGIS caído: nearest_psr_km = null y sin caché; la evaluación sigue",
+        "Sin DEM utilizable: terreno sintético (source = fallback) y no se usa caché persistente",
+        "Sin SPICE: Horizons y luego efemérides analíticas, solo con warnings en el log"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Errores realmente alcanzables",
+      "items": [
+        "Validación Pydantic: ERR_INVALID_PAYLOAD (400/422), ERR_INVALID_COORDINATES, ERR_DATE_OUT_OF_RANGE (422)",
+        "Motor no importable o incompleto: 503 ERR_UPSTREAM_SERVICE",
+        "Inferido: el 422 del motor y ERR_TERRAIN_UNAVAILABLE están mapeados, pero el motor actual valida antes y cae a fallback en vez de lanzar FileNotFoundError",
+        "Inferido: una excepción no capturada (p. ej. RuntimeError al armar el marco SPICE) saldría como 500 sin sobre ERR_*"
+      ]
+    }
+  ]
+}

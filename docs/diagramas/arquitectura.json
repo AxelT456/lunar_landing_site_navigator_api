@@ -1,0 +1,762 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Lunar Landing Site Navigator API · mapa del sistema",
+    "locale": "es",
+    "output": "docs/diagramas/arquitectura.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/AxelT456/lunar_landing_site_navigator_api.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "a0cf97fbce7afe285c7a43fa31c29d155c067c32"
+    }
+  },
+  "components": [
+    {
+      "id": "consola",
+      "type": "frontend",
+      "label": "Consola Luna",
+      "sublabel": "React/Vite · VITE_API_BASE_URL",
+      "pos": [
+        40,
+        285
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "globo",
+      "type": "frontend",
+      "label": "Globo CesiumJS",
+      "sublabel": "iframe embebido en la consola",
+      "pos": [
+        40,
+        430
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/main.py",
+          "line": 182,
+          "end_line": 189,
+          "label": "CORS para clientes de navegador"
+        }
+      ]
+    },
+    {
+      "id": "trek",
+      "type": "external",
+      "label": "NASA Moon Trek",
+      "sublabel": "WMTS · imágenes lunares",
+      "pos": [
+        40,
+        600
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "tunel",
+      "type": "cloud",
+      "label": "Cloudflare Quick Tunnel",
+      "sublabel": "URL pública en docs/07",
+      "pos": [
+        340,
+        285
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/main.py",
+          "line": 170,
+          "end_line": 172
+        },
+        {
+          "path": "docs/DEPLOY.md",
+          "line": 12,
+          "end_line": 19
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "uvicorn :8000 · /api/v1",
+      "tag": "CORS *",
+      "pos": [
+        670,
+        40
+      ],
+      "size": [
+        150,
+        554
+      ],
+      "sources": [
+        {
+          "path": "app/main.py",
+          "line": 156,
+          "end_line": 189
+        },
+        {
+          "path": "app/main.py",
+          "line": 250,
+          "end_line": 257,
+          "label": "7 routers"
+        },
+        {
+          "path": "Dockerfile",
+          "line": 26,
+          "end_line": 30
+        }
+      ]
+    },
+    {
+      "id": "rHealth",
+      "type": "backend",
+      "label": "health",
+      "sublabel": "GET /health",
+      "pos": [
+        890,
+        40
+      ],
+      "size": [
+        210,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/routers/health.py",
+          "line": 77,
+          "end_line": 121
+        }
+      ]
+    },
+    {
+      "id": "rSites",
+      "type": "backend",
+      "label": "sites · psr",
+      "sublabel": "GET /sites · /psr · /psr/nearby",
+      "pos": [
+        890,
+        150
+      ],
+      "size": [
+        210,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/routers/sites.py",
+          "line": 18,
+          "end_line": 63
+        },
+        {
+          "path": "app/routers/psr.py",
+          "line": 21,
+          "end_line": 98
+        }
+      ]
+    },
+    {
+      "id": "rTerrain",
+      "type": "backend",
+      "label": "terrain",
+      "sublabel": "GET /terrain/patch · /terrain/tiles/…",
+      "pos": [
+        890,
+        260
+      ],
+      "size": [
+        210,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/routers/terrain.py",
+          "line": 21,
+          "end_line": 60,
+          "label": "patch + PSR cercanos"
+        },
+        {
+          "path": "app/routers/terrain.py",
+          "line": 124,
+          "end_line": 238,
+          "label": "teselas png / bin / hillshade"
+        }
+      ]
+    },
+    {
+      "id": "rEval",
+      "type": "backend",
+      "label": "evaluate · compare",
+      "sublabel": "POST /evaluate · /compare",
+      "pos": [
+        890,
+        400
+      ],
+      "size": [
+        210,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/routers/evaluate.py",
+          "line": 13,
+          "end_line": 26
+        },
+        {
+          "path": "app/routers/compare.py",
+          "line": 13,
+          "end_line": 36
+        },
+        {
+          "path": "app/routers/_common.py",
+          "line": 115,
+          "end_line": 200,
+          "label": "run_site_evaluation"
+        }
+      ]
+    },
+    {
+      "id": "rEphem",
+      "type": "backend",
+      "label": "ephemeris",
+      "sublabel": "GET /ephemeris",
+      "pos": [
+        890,
+        530
+      ],
+      "size": [
+        210,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/routers/ephemeris.py",
+          "line": 13,
+          "end_line": 34
+        }
+      ]
+    },
+    {
+      "id": "postgis",
+      "type": "database",
+      "label": "PostgreSQL + PostGIS",
+      "sublabel": "sitios · PSR · cachés",
+      "pos": [
+        1250,
+        40
+      ],
+      "size": [
+        190,
+        174
+      ],
+      "sources": [
+        {
+          "path": "app/db.py",
+          "line": 19,
+          "end_line": 41,
+          "label": "pool psycopg (DATABASE_URL)"
+        },
+        {
+          "path": "app/db.py",
+          "line": 232,
+          "end_line": 300,
+          "label": "cachés horizonte / efemérides"
+        },
+        {
+          "path": "db/init/00_extensions.sql",
+          "line": 1,
+          "end_line": 2
+        }
+      ]
+    },
+    {
+      "id": "eTiles",
+      "type": "backend",
+      "label": "engine/tiles",
+      "sublabel": "teselas PNG/.bin · caché LRU",
+      "pos": [
+        1250,
+        260
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/engine/tiles.py",
+          "line": 1,
+          "end_line": 30
+        },
+        {
+          "path": "app/engine/tiles.py",
+          "line": 79,
+          "end_line": 90,
+          "label": "caché y concurrencia por env"
+        },
+        {
+          "path": "app/engine/tiles.py",
+          "line": 705,
+          "end_line": 782,
+          "label": "render_tile: caché + slots"
+        }
+      ]
+    },
+    {
+      "id": "eTerrain",
+      "type": "backend",
+      "label": "engine/terrain",
+      "sublabel": "muestreo DEM · parche · horizonte",
+      "pos": [
+        1250,
+        400
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/engine/terrain.py",
+          "line": 1,
+          "end_line": 58
+        }
+      ]
+    },
+    {
+      "id": "eEphem",
+      "type": "backend",
+      "label": "engine/ephemeris",
+      "sublabel": "Skyfield · potencia · Go/No-Go",
+      "pos": [
+        1250,
+        530
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 1,
+          "end_line": 7
+        },
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 545,
+          "end_line": 612
+        },
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 737,
+          "end_line": 748
+        }
+      ]
+    },
+    {
+      "id": "lola",
+      "type": "database",
+      "label": "DEM LOLA (GeoTIFF)",
+      "sublabel": "disco · DATA_DIR/raw/lola",
+      "pos": [
+        1540,
+        260
+      ],
+      "size": [
+        170,
+        204
+      ],
+      "sources": [
+        {
+          "path": "app/engine/terrain.py",
+          "line": 28,
+          "end_line": 58
+        },
+        {
+          "path": "app/engine/tiles.py",
+          "line": 602,
+          "end_line": 617,
+          "label": "firma DEM + .ovr"
+        },
+        {
+          "path": "app/routers/health.py",
+          "line": 84,
+          "end_line": 90
+        }
+      ]
+    },
+    {
+      "id": "spice",
+      "type": "database",
+      "label": "Kernels SPICE",
+      "sublabel": "disco · DATA_DIR/raw/spice",
+      "pos": [
+        1540,
+        530
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 48,
+          "end_line": 60
+        },
+        {
+          "path": "app/routers/health.py",
+          "line": 92,
+          "end_line": 92
+        }
+      ]
+    },
+    {
+      "id": "horizons",
+      "type": "external",
+      "label": "JPL Horizons API",
+      "sublabel": "externo · solo fallback",
+      "pos": [
+        1250,
+        680
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 224,
+          "end_line": 245
+        },
+        {
+          "path": "app/engine/ephemeris.py",
+          "line": 604,
+          "end_line": 612
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "type": "external",
+      "label": "GitHub · repo API",
+      "sublabel": "PR / merge a main",
+      "pos": [
+        40,
+        760
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": ".woodpecker/ci.yaml",
+          "line": 1,
+          "end_line": 7
+        }
+      ]
+    },
+    {
+      "id": "ci",
+      "type": "cloud",
+      "label": "Woodpecker · ci",
+      "sublabel": "pytest · seed PostGIS · contract · build",
+      "pos": [
+        310,
+        760
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "sources": [
+        {
+          "path": ".woodpecker/ci.yaml",
+          "line": 9,
+          "end_line": 55
+        }
+      ]
+    },
+    {
+      "id": "deploy",
+      "type": "cloud",
+      "label": "Woodpecker · deploy",
+      "sublabel": "SSH → deploy-backend.sh · smoke",
+      "pos": [
+        695,
+        760
+      ],
+      "size": [
+        200,
+        64
+      ],
+      "sources": [
+        {
+          "path": ".woodpecker/deploy.yaml",
+          "line": 1,
+          "end_line": 33
+        },
+        {
+          "path": "docs/DEPLOY.md",
+          "line": 27,
+          "end_line": 40
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Cliente (navegador)",
+      "wraps": [
+        "consola",
+        "globo"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Servidor · Producción",
+      "wraps": [
+        "api",
+        "rHealth",
+        "rSites",
+        "rTerrain",
+        "rEval",
+        "rEphem",
+        "postgis",
+        "eTiles",
+        "eTerrain",
+        "eEphem",
+        "lola",
+        "spice"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "CI/CD",
+      "wraps": [
+        "github",
+        "ci",
+        "deploy"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "consolaTunel",
+      "from": "consola",
+      "to": "tunel",
+      "label": "HTTPS · /api/v1",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tunelApi",
+      "from": "tunel",
+      "to": "api",
+      "label": "proxy al contenedor",
+      "variant": "emphasis"
+    },
+    {
+      "id": "consolaGlobo",
+      "from": "consola",
+      "to": "globo",
+      "label": "iframe · postMessage"
+    },
+    {
+      "id": "globoTrek",
+      "from": "globo",
+      "to": "trek",
+      "label": "WMTS (imágenes)"
+    },
+    {
+      "id": "globoTunel",
+      "from": "globo",
+      "to": "tunel",
+      "label": "GET /terrain/tiles (.png)"
+    },
+    {
+      "id": "apiHealth",
+      "from": "api",
+      "to": "rHealth"
+    },
+    {
+      "id": "apiSites",
+      "from": "api",
+      "to": "rSites"
+    },
+    {
+      "id": "apiTerrain",
+      "from": "api",
+      "to": "rTerrain"
+    },
+    {
+      "id": "apiEval",
+      "from": "api",
+      "to": "rEval"
+    },
+    {
+      "id": "apiEphem",
+      "from": "api",
+      "to": "rEphem"
+    },
+    {
+      "id": "healthDb",
+      "from": "rHealth",
+      "to": "postgis",
+      "label": "SELECT COUNT(*)"
+    },
+    {
+      "id": "sitesDb",
+      "from": "rSites",
+      "to": "postgis",
+      "label": "sitios · PSR (SQL)"
+    },
+    {
+      "id": "terrainDb",
+      "from": "rTerrain",
+      "to": "postgis",
+      "label": "PSR cercanos"
+    },
+    {
+      "id": "terrainTiles",
+      "from": "rTerrain",
+      "to": "eTiles",
+      "label": "render_tile"
+    },
+    {
+      "id": "terrainPatch",
+      "from": "rTerrain",
+      "to": "eTerrain",
+      "label": "parche 3D"
+    },
+    {
+      "id": "evalDb",
+      "from": "rEval",
+      "to": "postgis",
+      "label": "caché R/W"
+    },
+    {
+      "id": "evalTerrain",
+      "from": "rEval",
+      "to": "eTerrain",
+      "label": "terreno + horizonte"
+    },
+    {
+      "id": "evalEphem",
+      "from": "rEval",
+      "to": "eEphem",
+      "label": "misión Sol/Tierra"
+    },
+    {
+      "id": "ephemEngine",
+      "from": "rEphem",
+      "to": "eEphem",
+      "label": "Sol y Tierra"
+    },
+    {
+      "id": "tilesLola",
+      "from": "eTiles",
+      "to": "lola",
+      "label": "rasterio"
+    },
+    {
+      "id": "terrainLola",
+      "from": "eTerrain",
+      "to": "lola",
+      "label": "rasterio"
+    },
+    {
+      "id": "ephemSpice",
+      "from": "eEphem",
+      "to": "spice",
+      "label": "Skyfield"
+    },
+    {
+      "id": "ephemHorizons",
+      "from": "eEphem",
+      "to": "horizons",
+      "label": "HTTPS (fallback)",
+      "variant": "dashed"
+    },
+    {
+      "id": "githubCi",
+      "from": "github",
+      "to": "ci",
+      "label": "PR / push a main"
+    },
+    {
+      "id": "ciDeploy",
+      "from": "ci",
+      "to": "deploy",
+      "label": "ci verde · push main"
+    },
+    {
+      "id": "deployApi",
+      "from": "deploy",
+      "to": "api",
+      "label": "producción <sha>",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Rutas",
+      "items": [
+        "Prefijo /api/v1 con 7 routers: health, sites, terrain, evaluate, compare, psr, ephemeris.",
+        "La consola usa /health, /sites, /terrain/patch, /evaluate, /compare y /psr/nearby.",
+        "/terrain/tiles sirve PNG, heightmap .bin y hillshade; /psr y /ephemeris son vistas globales.",
+        "GET de datos de referencia llevan Cache-Control de 1 h; /health nunca."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Motor y datos",
+      "items": [
+        "/evaluate y /compare comparten run_site_evaluation y guardan horizonte y misión en PostGIS (salvo DEM de respaldo).",
+        "Teselas: caché LRU en proceso (TILE_CACHE_MAX_MB, 192 MB), hasta TILE_RENDER_CONCURRENCY (4) renders a la vez; peticiones idénticas comparten un render.",
+        "Si un DEM tiene overviews .ovr, solo las teselas las usan; /terrain/patch y /evaluate leen a resolución completa.",
+        "/sites solo usa engine/terrain si a un sitio le falta elevación o pendiente en la BD.",
+        "Efemérides: Skyfield + SPICE; si falla, JPL Horizons y luego modelo analítico. /ephemeris exige SPICE.",
+        "Sin DATABASE_URL la API arranca y los endpoints con BD responden 503."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "CI/CD",
+      "items": [
+        "PR: pytest, PostGIS efímero con db/init, contract gate (bloqueante) y build dry-run.",
+        "Merge a main con CI verde: deploy a Producción (D-017) con health check y rollback automático.",
+        "Después: smoke interno y health pública (solo avisa)."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Inferido / fuera de este repo",
+      "items": [
+        "Consola, globo y Moon Trek salen de sus propios repos; aquí no hay fuente para ellos.",
+        "La consola manda al globo SET_CONFIG con terrainTilesUrl (<API>/terrain/tiles); el globo pide solo los PNG Terrarium, sombrea en el navegador y, si fallan, sigue con Moon Trek.",
+        "Puerto del túnel al contenedor (:8000) inferido de Dockerfile y docs/DEPLOY.md.",
+        "PostGIS y DEM en el servidor según docs/07; el montaje de DATA_DIR no está en este repo."
+      ]
+    }
+  ]
+}
