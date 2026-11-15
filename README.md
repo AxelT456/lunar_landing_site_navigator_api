@@ -12,10 +12,12 @@ REST API backend for evaluating and comparing lunar south pole landing sites, ca
 - **Permanently Shadowed Regions (`GET /api/v1/psr/nearby`)**: GeoJSON boundaries of nearby PSRs.
 - **PSR catalog (`GET /api/v1/psr`)**: every PSR once, paginated (`offset`, `limit` ≤ 500), simplified (`simplify_m`, default 500 m), with a label point in polar metres and lat/lon. For whole-pole views such as the globe.
 - **Moon-centered ephemeris (`GET /api/v1/ephemeris?utc=`)**: Sun and Earth direction, sub-point and distance from the Moon's center in `MOON_ME_DE421` (SPICE only; `503` without kernels).
-- **Lunar terrain tiles (`GET /api/v1/terrain/tiles/{z}/{row}/{col}.png`)**: 256×256 elevation tiles of the whole Moon for the globe (handoff `P-008`), in the Moon Trek / Cesium geographic scheme (level 0 = 2×1, row 0 = north, `z` 0–9), so the globe can use a single terrain source.
+- **Lunar terrain tiles (`GET /api/v1/terrain/tiles/{z}/{row}/{col}.png`)**: 256×256 elevation tiles of the whole Moon for the globe (handoff `P-008`), in the Moon Trek / Cesium geographic scheme (level 0 = 2×1, row 0 = north, `z` 0–10), so the globe can use a single terrain source.
   - Terrarium PNG: `elevation_m = R*256 + G + B/256 - 32768` (1/256 m), relative to the 1,737,400 m sphere like `/terrain/patch`. 16-bit PNG is not used because browsers read PNGs through an 8-bit canvas.
-  - Sources: the LOLA polar DEM that fits the zoom (40 m from `z` 9, 80 m below) where it has data, the finest global DEM available (`ldem_256`, 118 m, or `ldem_64`, 474 m) elsewhere. Low zoom levels read the DEMs decimated by a power of two over blocks aligned to the raster origin, so neighbouring tiles share their edges (no seams); the global DEM wraps at ±180°.
-  - Headers: `X-Terrain-Source` (exposed to browsers through CORS), `ETag` (changes when a DEM file is replaced; `If-None-Match` answers `304`) and `Cache-Control: public, max-age=3600`. `503 ERR_TERRAIN_UNAVAILABLE` if the DEMs do not cover the tile.
+  - Sources: the LOLA polar DEM that fits the sample spacing (20 m from `z` 10, 40 m at `z` 9, 80 m below) where it has data, the finest global DEM available (`ldem_256`, 118 m, or `ldem_64`, 474 m) elsewhere. Low zoom levels read the DEMs decimated by a power of two over blocks aligned to the raster origin, so neighbouring tiles share their edges (no seams); the global DEM wraps at ±180°.
+  - Headers: `X-Terrain-Source` and `X-Terrain-Resolution-M` (spacing of the DEM data actually read; both exposed to browsers through CORS), `ETag` (changes when a DEM file is replaced; `If-None-Match` answers `304`) and `Cache-Control: public, max-age=3600`. `503 ERR_TERRAIN_UNAVAILABLE` if the DEMs do not cover the tile.
+- **Terrain heightmap (`GET /api/v1/terrain/tiles/heightmap/{z}/{row}/{col}.bin`, v1.5)**: the same terrain as a 65×65 little-endian `float32` vertex grid that includes the tile edges (row 0 = north, `z` 0–12, quantized to 1/256 m), ready for Cesium's heightmap terrain without resampling. Neighbouring tiles share bit-identical edges. Gzip when the client accepts it (about 8–12 KB instead of 90–160 KB for a Terrarium tile).
+- **Terrain hillshade (`GET /api/v1/terrain/tiles/hillshade/{z}/{row}/{col}.png`, v1.5)**: 256×256 8-bit gray relief shading of the whole Moon (`z` 0–10), ready to paint as an imagery layer: `round(255 * cos(incidence))` of a distant light, without cast shadows. Slopes are central differences on the DEM's own grid (polar stereographic with its scale factor, or latitude/longitude) read around each pixel, so tiles have no seams. Query: `light_lon`, `light_lat` (where the light is overhead; default 135° E, 22° S, the globe's light), `exaggeration` (default 1) and optionally `fade_start_lat` + `fade_end_lat` for a gray + alpha PNG that fades in with latitude.
 
 Additive changes for clients (no field removed or renamed):
 
@@ -23,6 +25,7 @@ Additive changes for clients (no field removed or renamed):
 - `/compare` accepts `include_timeline: true` to return each scenario's timeline.
 - `grid.source` (`lola_polar`/`lola_global`/`synthetic`) and `grid.native_resolution_m` in `/terrain/patch`; elevations rounded to 0.1 m and slopes to 0.01° (about 3x smaller payload).
 - `Cache-Control: public, max-age=3600` on successful `GET` of sites, terrain, PSR and ephemeris (never on `/health` or errors).
+- v1.5: `/terrain/tiles` up to `z` 10 and `X-Terrain-Resolution-M`; new `/terrain/tiles/heightmap` and `/terrain/tiles/hillshade`.
 
 ## Architecture
 
@@ -30,7 +33,7 @@ Built with **FastAPI**, **Pydantic v2**, **PostgreSQL + PostGIS** and NASA datas
 
 - `app/main.py`: application, unified `ErrorResponse` handlers (`ERR_*` codes) and router registration.
 - `app/routers/`: one module per endpoint; `_common.py` runs the evaluation pipeline with the PostGIS caches.
-- `app/engine/`: physics engine. LOLA DEMs (polar 20/40/80 m and global `ldem_256` or `ldem_64`), 360° horizon raycasting with lunar curvature, SPICE ephemerides via Skyfield (JPL Horizons and an analytical model as fallbacks), GO/CAUTION/NO-GO verdict. `tiles.py` renders the globe's terrain tiles.
+- `app/engine/`: physics engine. LOLA DEMs (polar 20/40/80 m and global `ldem_256` or `ldem_64`), 360° horizon raycasting with lunar curvature, SPICE ephemerides via Skyfield (JPL Horizons and an analytical model as fallbacks), GO/CAUTION/NO-GO verdict. `tiles.py` renders the globe's terrain tiles (elevation, heightmap and hillshade).
 - `app/db.py`: PostGIS access (`landing_sites`, `psr_regions`, `horizon_profiles`, `ephemeris_cache`).
 - `app/models.py`: request/response schemas matching `lunar-landing-api-contract.md` (v1.1).
 

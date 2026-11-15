@@ -14,6 +14,7 @@ from app.engine.tiles import (
     TileOutOfRangeError,
     TileUnavailableError,
     render_terrain_tile,
+    render_tile,
 )
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "evaluate_site_mission",
     "moon_center_ephemeris",
     "render_terrain_tile",
+    "render_tile",
     "TileOutOfRangeError",
     "TileUnavailableError",
 ]
