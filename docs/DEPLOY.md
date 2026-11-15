@@ -43,7 +43,57 @@ The `public-health` step checks the public URL from the `public_api_base`
 secret (events `push` and `deployment`). Update it when the tunnel URL changes
 (handoff repo `docs/07`). A failure there only warns.
 
-Database credentials live only on the server (`/srv/spaceapps/services/backend-official/.env`).
+## Server environment
+
+`deploy-backend.sh` passes `/srv/spaceapps/services/backend-official/.env` to
+every container it starts (`--env-file`), so a change there applies from the
+next deploy on, automatic ones included. The file lives only on the server and
+is never committed: it holds the database credentials.
+
+| Variable | On the server | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `postgresql://spaceapps:<server-password>@spaceapps-postgres:5432/spaceapps` | PostGIS on `spaceapps-net` |
+| `DATA_DIR` | `/data` (`/srv/spaceapps/data` mounted read-only) | NASA datasets |
+| `WEB_CONCURRENCY` | `2` (since 2026-11-15) | Uvicorn worker processes; Uvicorn reads it as the default of `--workers` (1 when unset) |
+
+### Why two workers
+
+Each process reads one DEM at a time (`_RASTER_LOCK`), so a single process
+renders tiles on about one core. With two workers, production used two cores
+(200 %) under real traffic. Measured on 2026-11-15 with 128 uncached tiles, 8
+in parallel, against two containers of the same image side by side: 0.93 s
+with one worker and 0.78-0.99 s with two (10-20 % more throughput) with the
+DEMs already in the page cache. The gain grows when tiles are slow.
+
+Costs:
+
+- **Memory:** every worker keeps its own raster handles, GDAL block cache and
+  tile cache (`TILE_CACHE_MAX_MB`): 1.8 GiB at startup instead of 1.2 GiB, and
+  about 3.8 GiB in production after some traffic. During a deploy the old and
+  the new container run together for a few seconds.
+- **Caches are not shared:** a tile may be rendered once per worker, and
+  `TILE_RENDER_CONCURRENCY` applies per worker (up to 8 renders at once).
+- **Free RAM matters as much:** the DEMs (`ldem_256.tif` 2.8 GB, the 20 m polar
+  DEM 2.5 GB) are read through the page cache, which shares the host memory
+  with every other container. Raise workers only with memory to spare.
+
+### Changing or reverting it
+
+Back up the file, edit it (deleting the `WEB_CONCURRENCY` line goes back to one
+worker) and redeploy the commit already in production:
+
+```bash
+cd /srv/spaceapps/services/backend-official
+cp -p .env ".env.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+"${EDITOR:-vi}" .env
+SHA=$(docker inspect -f '{{index .Config.Labels "spaceapps.commit"}}' spaceapps-api-prod)
+sudo -u hackaton /srv/spaceapps/services/deploy/deploy-backend.sh production "$SHA"
+docker logs spaceapps-api-prod 2>&1 | grep -c "Started server process"   # workers
+```
+
+Run the script as `hackaton`, the deploy key's user: the clone in `src/`
+belongs to it. The backup taken before the change of 2026-11-15 is
+`.env.bak-20261115T165022Z`.
 
 ## Rollback
 
