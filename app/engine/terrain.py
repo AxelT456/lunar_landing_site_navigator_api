@@ -50,7 +50,7 @@ GLOBAL_DEM_CANDIDATES: tuple[str, ...] = (
 )
 
 _RASTER_LOCK = threading.RLock()
-_RASTER_CACHE: dict[str, tuple[tuple[int, int], rasterio.DatasetReader]] = {}
+_RASTER_CACHE: dict[str, tuple[tuple[int, ...], rasterio.DatasetReader]] = {}
 _TRANSFORMER_CACHE: dict[tuple[str, str], Any] = {}
 
 
@@ -111,7 +111,14 @@ def _get_dataset_by_path(path: Path | None) -> rasterio.DatasetReader | None:
     except OSError:
         return None
 
-    sig = (st.st_mtime_ns, st.st_size)
+    sig: tuple[int, ...] = (st.st_mtime_ns, st.st_size)
+    # GDAL reads external overviews (<raster>.ovr) only when it opens the raster: reopen it
+    # when they appear, change or go away.
+    try:
+        ovr = path.with_name(path.name + ".ovr").stat()
+        sig += (ovr.st_mtime_ns, ovr.st_size)
+    except OSError:
+        pass
     key = str(path)
     with _RASTER_LOCK:
         cached = _RASTER_CACHE.get(key)

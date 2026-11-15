@@ -111,7 +111,7 @@ def _tile_response(request: Request, render, gzip_body: bool = False) -> Respons
     if gzip_body:
         headers["Vary"] = "Accept-Encoding"
         if "gzip" in request.headers.get("accept-encoding", "").lower():
-            body = gzip.compress(body, compresslevel=6, mtime=0)
+            body = tile.gzip_body if tile.gzip_body is not None else gzip.compress(body, compresslevel=6, mtime=0)
             headers["Content-Encoding"] = "gzip"
             etag = etag[:-1] + '-gz"'  # each encoding is a different representation
     headers["ETag"] = etag
