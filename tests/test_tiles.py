@@ -126,7 +126,7 @@ def test_tile_bounds_match_moon_trek_geographic_scheme() -> None:
     assert lon_e - lon_w == pytest.approx(180.0 / 256)
 
 
-@pytest.mark.parametrize("z,row,col", [(-1, 0, 0), (10, 0, 0), (2, 4, 0), (2, 0, 8)])
+@pytest.mark.parametrize("z,row,col", [(-1, 0, 0), (11, 0, 0), (2, 4, 0), (2, 0, 8)])
 def test_tile_bounds_reject_out_of_range(z: int, row: int, col: int) -> None:
     with pytest.raises(tiles.TileOutOfRangeError):
         tiles.tile_bounds(z, row, col)
@@ -328,7 +328,7 @@ def test_tile_endpoint_serves_tiles_north_of_the_pole(data_dir: Path) -> None:
     assert np.allclose(decode_terrarium_png(r.content), GLOBAL_ELEV_M, atol=0.01)
 
 
-@pytest.mark.parametrize("path", ["10/0/0", "2/4/0", "2/0/8"])
+@pytest.mark.parametrize("path", ["11/0/0", "2/4/0", "2/0/8"])
 def test_tile_endpoint_invalid_index_is_422(data_dir: Path, path: str) -> None:
     with TestClient(app) as client:
         r = client.get(f"/api/v1/terrain/tiles/{path}.png")
@@ -342,3 +342,304 @@ def test_tile_endpoint_without_dem_is_503(data_dir: Path) -> None:
     assert r.status_code == 503
     assert _error_code(r.json()) == "ERR_TERRAIN_UNAVAILABLE"
     assert "cache-control" not in r.headers
+
+
+# ---------------------------------------------------------------- contract v1.5: level 10, heightmap, hillshade
+
+
+def decode_png(data: bytes) -> np.ndarray:
+    """Minimal PNG reader for 8-bit gray (0), gray + alpha (4) or RGB (2), filters None/Up: (H, W, C) uint8."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    pos, idat = 8, b""
+    channels = height = width = 0
+    while pos < len(data):
+        (length,) = struct.unpack(">I", data[pos : pos + 4])
+        kind = data[pos + 4 : pos + 8]
+        body = data[pos + 8 : pos + 8 + length]
+        if kind == b"IHDR":
+            width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", body)
+            assert depth == 8 and interlace == 0
+            channels = {0: 1, 4: 2, 2: 3}[color]
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + length
+    raw = np.frombuffer(zlib.decompress(idat), dtype=np.uint8).reshape(height, 1 + width * channels)
+    rows = np.zeros((height, width * channels), dtype=np.uint8)
+    prev = np.zeros(width * channels, dtype=np.uint8)
+    for r in range(height):
+        ftype, line = raw[r, 0], raw[r, 1:]
+        assert ftype in (0, 2)
+        rows[r] = line if ftype == 0 else (line.astype(np.uint16) + prev).astype(np.uint8)
+        prev = rows[r]
+    return rows.reshape(height, width, channels)
+
+
+def steep_plane_m(x: np.ndarray | float, y: np.ndarray | float) -> np.ndarray | float:
+    return 2000.0 + 0.3 * x - 0.2 * y  # ~20 deg slope: shading depends strongly on the gradient
+
+
+def global_linear_m(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+    # Metres, linear in the raster grid away from +/-180: ~9 deg north and ~6 deg east slopes.
+    return 1000.0 + 5000.0 * lat + 3000.0 * lon
+
+
+def write_global_dem_fn(data_dir: Path, fn, width: int = 360) -> None:
+    """SVS-style global DEM (km relative to 1737.4 km) sampled from fn(lat, lon) -> metres at pixel centers."""
+    gdir = data_dir / "raw" / "lola_global"
+    gdir.mkdir(parents=True, exist_ok=True)
+    height = width // 2
+    lon = (np.arange(width) + 0.5) / width * 360.0 - 180.0
+    lat = 90.0 - (np.arange(height) + 0.5) / height * 180.0
+    lon_g, lat_g = np.meshgrid(lon, lat)
+    with rasterio.open(
+        gdir / "ldem_64.tif", "w", driver="GTiff", height=height, width=width, count=1, dtype="float32"
+    ) as dst:
+        dst.write((fn(lat_g, lon_g) / 1000.0).astype(np.float32), 1)
+
+
+def independent_shade(lat: np.ndarray, lon: np.ndarray, height_fn, light: np.ndarray) -> np.ndarray:
+    """cos(incidence) from 3D surface points (R + h) * unit(lat, lon) and a cross product: no slopes,
+    no projection scale factors, nothing shared with the engine."""
+    R = 1_737_400.0
+
+    def point(la: np.ndarray, lo: np.ndarray) -> np.ndarray:
+        h = height_fn(la, lo)
+        p, l = np.radians(la), np.radians(lo)
+        return (R + h)[..., None] * np.stack([np.cos(p) * np.cos(l), np.cos(p) * np.sin(l), np.sin(p)], axis=-1)
+
+    d_lat = 1e-5
+    d_lon = d_lat / np.cos(np.radians(lat))
+    east = point(lat, lon + d_lon) - point(lat, lon - d_lon)
+    north = point(lat + d_lat, lon) - point(lat - d_lat, lon)
+    n = np.cross(east, north)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    return np.clip(n @ light, 0.0, 1.0)
+
+
+def polar_height_fn(surface):
+    def fn(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+        x, y = tiles._polar_xy(lat, lon)
+        return surface(x, y)
+
+    return fn
+
+
+def test_level_10_reads_the_20m_polar_dem(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
+    write_polar_dem(data_dir, res_m=20.0, half_m=8_000.0, surface=lambda x, y: plane_m(x, y) + 7.0,
+                    name="LDEM_80S_20MPP_ADJ.TIF")
+    tile = (10, 1023, 700)  # lat -89.82..-90: within 5.4 km of the pole, inside the 20 m raster
+    elev, source = tiles.tile_elevations(*tile)
+    assert source == "lola_polar_20mpp"
+    lat, lon = tiles._tile_pixel_latlon(*tile)
+    x, y = tiles._polar_xy(lat, lon)
+    assert np.max(np.abs(elev - (plane_m(x, y) + 7.0))) < 0.01
+    with TestClient(app) as client:
+        r = client.get("/api/v1/terrain/tiles/10/1023/700.png")
+    assert r.status_code == 200
+    assert r.headers["x-terrain-source"] == "lola_polar_20mpp"
+    assert r.headers["x-terrain-resolution-m"] == "20"
+
+
+def test_tile_endpoint_reports_the_resolution_read(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
+    write_global_dem(data_dir)
+    with TestClient(app) as client:
+        pole = client.get("/api/v1/terrain/tiles/8/255/300.png")
+        north = client.get("/api/v1/terrain/tiles/2/1/0.png")
+        coarse = client.get("/api/v1/terrain/tiles/5/31/0.png")  # ~667 m/px: 80 m DEM read 8x decimated
+    assert pole.headers["x-terrain-resolution-m"] == "80"
+    assert float(north.headers["x-terrain-resolution-m"]) == pytest.approx(30_323.4, abs=0.1)  # 1 deg/px DEM
+    assert coarse.headers["x-terrain-source"] == "lola_polar_80mpp+lola_global"
+    assert float(coarse.headers["x-terrain-resolution-m"]) == pytest.approx(30_323.4, abs=0.1)  # the coarsest
+
+
+def test_resolution_header_is_exposed_to_browsers(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
+    with TestClient(app) as client:
+        r = client.get("/api/v1/terrain/tiles/8/255/300.png", headers={"Origin": "http://localhost:5174"})
+    assert "x-terrain-resolution-m" in r.headers["access-control-expose-headers"].lower()
+
+
+# ---------------------------------------------------------------- heightmap
+
+
+def test_vertex_grid_includes_the_tile_edges() -> None:
+    lat, lon = tiles._tile_vertex_latlon(5, 30, 17)
+    lon_w, lat_s, lon_e, lat_n = tiles.tile_bounds(5, 30, 17)
+    assert lat.shape == (65, 65)
+    assert (lat[0, 0], lon[0, 0]) == (lat_n, lon_w)
+    assert lat[-1, -1] == pytest.approx(lat_s, abs=1e-12) and lon[-1, -1] == pytest.approx(lon_e, abs=1e-12)
+    assert tiles._vertex_spacing_m(12) == pytest.approx(20.8, abs=0.1)
+
+
+def test_heightmap_matches_the_dem_at_the_vertices(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
+    elev, source, res = tiles.heightmap_elevations(*POLE_TILE)
+    assert (source, res) == ("lola_polar_80mpp", 320.0)  # 65 samples ~333 m apart at z 8: 80 m DEM read 4x
+    lat, lon = tiles._tile_vertex_latlon(*POLE_TILE)
+    x, y = tiles._polar_xy(lat, lon)
+    assert np.max(np.abs(elev - plane_m(x, y))) < 0.01
+    assert np.ptp(elev[-1]) < 1e-9  # the whole bottom row is the pole: one point, one value
+
+
+@pytest.mark.parametrize(
+    "a,b,axis",
+    [
+        ((3, 7, 4), (3, 7, 5), "col"),
+        ((3, 7, 15), (3, 7, 0), "col"),  # antimeridian, polar DEM
+        ((2, 1, 7), (2, 1, 0), "col"),  # antimeridian, global DEM
+        ((3, 6, 9), (3, 7, 9), "row"),  # polar / mixed rows
+        ((2, 1, 3), (2, 2, 3), "row"),  # equator, global DEM
+    ],
+    ids=["z3", "z3-antimeridian-polar", "z2-antimeridian-global", "z3-rows", "z2-equator"],
+)
+def test_heightmap_neighbours_share_bit_identical_edges(data_dir: Path, a, b, axis: str) -> None:
+    write_polar_dem(data_dir, res_m=640.0, half_m=352_000.0, surface=rough_polar_m)
+    write_global_dem(data_dir, rough=True, width=1440)
+    ha = np.frombuffer(tiles.render_tile("heightmap", *a).body, dtype="<f4").reshape(65, 65)
+    hb = np.frombuffer(tiles.render_tile("heightmap", *b).body, dtype="<f4").reshape(65, 65)
+    if axis == "col":
+        assert np.array_equal(ha[:, -1], hb[:, 0])
+    else:
+        assert np.array_equal(ha[-1, :], hb[0, :])
+
+
+def test_heightmap_encoding_is_quantized_float32() -> None:
+    rng = np.random.default_rng(11)
+    elev = rng.uniform(-9000.0, 11000.0, size=(65, 65))
+    decoded = np.frombuffer(tiles.encode_heightmap(elev), dtype="<f4").reshape(65, 65).astype(np.float64)
+    assert np.max(np.abs(decoded - elev)) <= 0.5 / 256 + 1e-9
+    assert np.array_equal(decoded * 256.0, np.round(decoded * 256.0))  # exact multiples of 1/256 m
+
+
+def test_heightmap_endpoint_gzip_layout_and_etag(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
+    url = "/api/v1/terrain/tiles/heightmap/8/255/300.bin"
+    with TestClient(app) as client:
+        gz = client.get(url, headers={"Accept-Encoding": "gzip"})
+        plain = client.get(url, headers={"Accept-Encoding": "identity"})
+        again = client.get(url, headers={"Accept-Encoding": "gzip", "If-None-Match": gz.headers["etag"]})
+    assert gz.status_code == 200 and plain.status_code == 200
+    assert gz.headers["content-type"] == "application/octet-stream"
+    assert gz.headers["content-encoding"] == "gzip" and "content-encoding" not in plain.headers
+    assert "Accept-Encoding" in gz.headers["vary"]
+    assert gz.headers["cache-control"] == "public, max-age=3600"
+    assert gz.headers["x-terrain-source"] == "lola_polar_80mpp"
+    assert gz.headers["etag"] != plain.headers["etag"] and gz.headers["etag"].endswith('-gz"')
+    assert gz.content == plain.content and len(plain.content) == 65 * 65 * 4
+    elev, _, _ = tiles.heightmap_elevations(*POLE_TILE)
+    got = np.frombuffer(plain.content, dtype="<f4").reshape(65, 65)
+    assert np.max(np.abs(got - elev)) <= 0.5 / 256 + 1e-6
+    assert again.status_code == 304 and again.content == b""
+
+
+@pytest.mark.parametrize("path,status", [("12/4095/8191", 200), ("13/0/0", 422), ("2/4/0", 422)])
+def test_heightmap_levels(data_dir: Path, path: str, status: int) -> None:
+    write_polar_dem(data_dir)
+    write_global_dem(data_dir)
+    with TestClient(app) as client:
+        r = client.get(f"/api/v1/terrain/tiles/heightmap/{path}.bin")
+    assert r.status_code == status
+    if status == 422:
+        assert _error_code(r.json()) == "ERR_INVALID_PAYLOAD"
+
+
+# ---------------------------------------------------------------- hillshade
+
+
+def test_hillshade_on_polar_dem_matches_independent_normals(data_dir: Path) -> None:
+    write_polar_dem(data_dir, surface=steep_plane_m)
+    # Low light (~10 deg above the pole's horizon) from the downhill side of the plane: the plane
+    # falls toward stereographic (-0.3, +0.2), i.e. body-fixed (X, Y) = (0.2, -0.3), lon ~303.7 deg.
+    light = tiles.light_vector(303.7, -10.0)
+    shade, source, res = tiles.hillshade_values(*POLE_TILE, light_lon_deg=303.7, light_lat_deg=-10.0)
+    assert (source, res) == ("lola_polar_80mpp", 80.0)
+    lat, lon = tiles._tile_pixel_latlon(*POLE_TILE)
+    expected = independent_shade(lat, lon, polar_height_fn(steep_plane_m), light)
+    p, l = np.radians(lat), np.radians(lon)
+    flat = np.stack([np.cos(p) * np.cos(l), np.cos(p) * np.sin(l), np.sin(p)], axis=-1) @ light
+    assert np.min(np.abs(expected - flat)) > 0.2  # the slope really changes the shading
+    assert np.max(np.abs(shade - expected)) < 1e-4
+
+
+def test_hillshade_on_global_dem_matches_independent_normals(data_dir: Path) -> None:
+    write_global_dem_fn(data_dir, global_linear_m)
+    tile = (3, 2, 9)  # lat 22.5..45, lon 22.5..45: away from the poles and the antimeridian
+    shade, source, _ = tiles.hillshade_values(*tile, light_lon_deg=0.0, light_lat_deg=10.0)
+    assert source == "lola_global"
+    lat, lon = tiles._tile_pixel_latlon(*tile)
+    expected = independent_shade(lat, lon, global_linear_m, tiles.light_vector(0.0, 10.0))
+    assert np.max(np.abs(shade - expected)) < 1e-4
+
+
+def test_hillshade_of_flat_ground_is_the_light_elevation(data_dir: Path) -> None:
+    write_global_dem(data_dir)  # constant height
+    shade, _, _ = tiles.hillshade_values(2, 1, 4, light_lon_deg=10.0, light_lat_deg=-30.0)
+    lat, lon = tiles._tile_pixel_latlon(2, 1, 4)
+    p, l = np.radians(lat), np.radians(lon)
+    up = np.stack([np.cos(p) * np.cos(l), np.cos(p) * np.sin(l), np.sin(p)], axis=-1)
+    assert np.max(np.abs(shade - np.clip(up @ tiles.light_vector(10.0, -30.0), 0.0, 1.0))) < 1e-9
+
+
+@pytest.mark.parametrize(
+    "z,row,col_a,col_b",
+    [(3, 7, 4, 5), (3, 7, 15, 0), (2, 1, 7, 0), (5, 31, 40, 41)],
+    ids=["z3", "z3-antimeridian-polar", "z2-antimeridian-global", "z5"],
+)
+def test_hillshade_has_no_seams(data_dir: Path, z: int, row: int, col_a: int, col_b: int) -> None:
+    write_polar_dem(data_dir, res_m=640.0, half_m=352_000.0, surface=rough_polar_m)
+    write_global_dem(data_dir, rough=True, width=1440)
+    a, _, _ = tiles.hillshade_values(z, row, col_a, exaggeration=5.0)
+    b, _, _ = tiles.hillshade_values(z, row, col_b, exaggeration=5.0)
+    edge = np.mean(np.abs(a[:, -1] - b[:, 0]))
+    inner = np.mean(np.abs(np.diff(a, axis=1)))
+    assert inner > 0
+    assert edge < 1.5 * inner
+
+
+def test_hillshade_endpoint_png_fade_and_etag(data_dir: Path) -> None:
+    write_polar_dem(data_dir, surface=steep_plane_m)
+    base = "/api/v1/terrain/tiles/hillshade/8/255/300.png"
+    with TestClient(app) as client:
+        gray = client.get(f"{base}?light_lon=30&light_lat=-70")
+        same = client.get(f"{base}?light_lon=30.004&light_lat=-70.001")  # same light after rounding to 0.01
+        faded = client.get(f"{base}?light_lon=30&light_lat=-70&fade_start_lat=-89.4&fade_end_lat=-89.6")
+        again = client.get(f"{base}?light_lon=30&light_lat=-70", headers={"If-None-Match": gray.headers["etag"]})
+    assert gray.status_code == 200 and gray.headers["content-type"] == "image/png"
+    assert gray.headers["x-terrain-source"] == "lola_polar_80mpp"
+    img = decode_png(gray.content)
+    assert img.shape == (256, 256, 1)
+    shade, _, _ = tiles.hillshade_values(*POLE_TILE, light_lon_deg=30.0, light_lat_deg=-70.0)
+    assert np.max(np.abs(img[..., 0].astype(int) - np.round(shade * 255).astype(int))) == 0
+    assert same.headers["etag"] == gray.headers["etag"]
+    assert faded.headers["etag"] != gray.headers["etag"]
+    fimg = decode_png(faded.content)
+    assert fimg.shape == (256, 256, 2)
+    lat, _ = tiles._tile_pixel_latlon(*POLE_TILE)
+    assert np.all(fimg[lat[:, 0] > -89.4, :, 1] == 0)
+    assert np.all(fimg[lat[:, 0] < -89.6, :, 1] == 255)
+    assert np.array_equal(fimg[..., 0], img[..., 0])
+    assert again.status_code == 304
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["exaggeration=0", "exaggeration=25", "light_lat=91", "light_lon=400", "fade_start_lat=-83",
+     "fade_start_lat=-83&fade_end_lat=-83"],
+)
+def test_hillshade_invalid_parameters_are_422(data_dir: Path, query: str) -> None:
+    write_polar_dem(data_dir)
+    with TestClient(app) as client:
+        r = client.get(f"/api/v1/terrain/tiles/hillshade/8/255/300.png?{query}")
+    assert r.status_code == 422
+    assert _error_code(r.json()) == "ERR_INVALID_PAYLOAD"
+
+
+def test_tile_cache_is_bounded_in_bytes(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_global_dem(data_dir, rough=True, width=720)
+    monkeypatch.setattr(tiles, "_TILE_CACHE_MAX_BYTES", 40_000)
+    for col in range(6):
+        tiles.render_tile("heightmap", 2, 1, col)
+    assert tiles._tile_cache_bytes <= 40_000
+    assert tiles._tile_cache_bytes == sum(len(v[0]) for v in tiles._tile_cache.values())

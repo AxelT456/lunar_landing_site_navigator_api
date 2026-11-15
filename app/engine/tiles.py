@@ -1,21 +1,29 @@
-"""Lunar elevation tiles for the globe (handoff P-008).
+"""Lunar terrain tiles for the globe (handoff P-008, D-016, D-019).
 
 Tiles follow the geographic scheme of NASA Moon Trek and Cesium's GeographicTilingScheme:
 level 0 has 2 columns x 1 row, each tile spans 180 / 2**z degrees, row 0 is the north edge
-and column 0 starts at -180 deg. Every tile is 256 x 256 samples at pixel centers and
-covers the whole Moon, so the globe can use a single terrain source (no seam where two
-sources meet).
+and column 0 starts at -180 deg. Every tile covers the whole Moon, so the globe can use a
+single terrain source (no seam where two sources meet). Three products share the scheme:
+
+* Elevation (Terrarium PNG, 256 x 256 samples at pixel centers, z 0..10):
+
+      elevation_m = R * 256 + G + B / 256 - 32768      (resolution 1/256 m)
+
+  Terrarium is used instead of 16-bit grayscale because browsers read PNGs through an
+  8-bit canvas, which would truncate 16-bit samples.
+* Heightmap (65 x 65 little-endian float32, z 0..12): samples ON the tile edges and
+  corners (vertex grid), the layout Cesium's heightmap terrain expects, so neighbouring
+  tiles share bit-identical edge values. Values are quantized to 1/256 m like Terrarium.
+* Hillshade (8-bit gray PNG, 256 x 256 at pixel centers, z 0..10): Lambert cosine of the
+  angle between a distant light and the terrain normal, without cast shadows. Slopes are
+  central differences on the DEM's own grid (polar stereographic for the polar DEM, with
+  its scale factor; latitude/longitude for the global DEM), and every pixel reads its
+  neighbours from the raster, not from the tile, so tile edges show no seams.
 
 Elevations are metres relative to the 1,737,400 m lunar sphere (the same datum as
-Ellipsoid.MOON and /terrain/patch), encoded as Terrarium PNG:
-
-    elevation_m = R * 256 + G + B / 256 - 32768      (resolution 1/256 m)
-
-Terrarium is used instead of 16-bit grayscale because browsers read PNGs through an
-8-bit canvas, which would truncate 16-bit samples.
-
-Sources, best first: the LOLA south polar DEM whose resolution best matches the tile
-(20/40/80 m) where it has data, then the global LOLA DEM (ldem_64, ~474 m/px).
+Ellipsoid.MOON and /terrain/patch). Sources, best first: the LOLA south polar DEM whose
+resolution best matches the sample spacing (20/40/80 m) where it has data, then the finest
+global LOLA DEM on disk (ldem_256, ~118 m/px, or ldem_64, ~474 m/px).
 
 Seamless decimation: at low zoom the DEM is read decimated by a power-of-two factor over
 whole blocks aligned to the raster origin. Every tile of a zoom level therefore samples
@@ -31,6 +39,7 @@ import struct
 import threading
 import zlib
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -53,12 +62,17 @@ from app.engine.terrain import (
 )
 
 TILE_SIZE = 256
-MAX_TILE_LEVEL = 9  # ~42 m/px along a meridian: matches the 40 m LOLA polar DEM
+MAX_TILE_LEVEL = 10  # ~21 m/px along a meridian: matches the 20 m LOLA polar DEM
+HEIGHTMAP_SIZE = 65
+MAX_HEIGHTMAP_LEVEL = 12  # 180 / 2**12 / 64 deg ~ 21 m between samples
 TERRARIUM_OFFSET_M = 32768.0
+# Default hillshade light: overhead at lat -22 deg, lon 135 deg E (the globe's fixed light).
+DEFAULT_LIGHT_LON_DEG = 135.0
+DEFAULT_LIGHT_LAT_DEG = -22.0
 # Above this decimation factor, nearest-neighbour reads touch only the rows GDAL needs;
 # averaging would read every block of a very large window (low zoom levels).
 _AVERAGE_MAX_FACTOR = 8
-_TILE_CACHE_SIZE = 256
+_TILE_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 
 class TileOutOfRangeError(ValueError):
@@ -69,10 +83,10 @@ class TileUnavailableError(FileNotFoundError):
     """The DEMs on the server do not cover the whole tile."""
 
 
-def tile_bounds(z: int, row: int, col: int) -> tuple[float, float, float, float]:
+def tile_bounds(z: int, row: int, col: int, max_level: int = MAX_TILE_LEVEL) -> tuple[float, float, float, float]:
     """Return (lon_west, lat_south, lon_east, lat_north) in degrees for a tile."""
-    if not 0 <= z <= MAX_TILE_LEVEL:
-        raise TileOutOfRangeError(f"z must be between 0 and {MAX_TILE_LEVEL}")
+    if not 0 <= z <= max_level:
+        raise TileOutOfRangeError(f"z must be between 0 and {max_level}")
     if not 0 <= row < 2**z:
         raise TileOutOfRangeError(f"row must be between 0 and {2**z - 1} at z={z}")
     if not 0 <= col < 2 ** (z + 1):
@@ -94,9 +108,30 @@ def _tile_pixel_latlon(z: int, row: int, col: int) -> tuple[np.ndarray, np.ndarr
     return lat_grid, lon_grid
 
 
+def _tile_vertex_latlon(z: int, row: int, col: int, size: int = HEIGHTMAP_SIZE) -> tuple[np.ndarray, np.ndarray]:
+    """Latitude/longitude of a size x size vertex grid that includes the tile edges (row 0 = north).
+
+    Positions are computed as (index + fraction) * span from the scheme origin, so the last
+    column of a tile and the first column of its eastern neighbour are the same floats.
+    """
+    tile_bounds(z, row, col, MAX_HEIGHTMAP_LEVEL)
+    span = 180.0 / 2**z
+    frac = np.arange(size, dtype=np.float64) / (size - 1)
+    lon = -180.0 + (col + frac) * span
+    lon = np.where(lon >= 180.0, lon - 360.0, lon)  # +180 is -180: the same floats on both sides of the antimeridian
+    lat = 90.0 - (row + frac) * span
+    lon_grid, lat_grid = np.meshgrid(lon, lat)
+    return lat_grid, lon_grid
+
+
 def _tile_ground_resolution_m(z: int) -> float:
     """Ground size of one tile pixel along a meridian (the coarser axis near the pole)."""
     return math.radians((180.0 / 2**z) / TILE_SIZE) * MOON_RADIUS_M
+
+
+def _vertex_spacing_m(z: int, size: int = HEIGHTMAP_SIZE) -> float:
+    """Ground distance between heightmap samples along a meridian."""
+    return math.radians((180.0 / 2**z) / (size - 1)) * MOON_RADIUS_M
 
 
 def _decimation_factor(target_m: float, native_m: float) -> int:
@@ -218,30 +253,80 @@ def _pick_polar_dataset(target_res_m: float) -> tuple[rasterio.DatasetReader | N
     return ds, tier
 
 
-def _sample_polar(lat: np.ndarray, lon: np.ndarray, z: int) -> tuple[np.ndarray, str | None]:
-    target = _tile_ground_resolution_m(z)
-    ds, tier = _pick_polar_dataset(target)
+
+
+def _effective_resolution_m(native_m: float, target_m: float) -> float:
+    """Spacing of the data actually read: the native pixel times the decimation factor."""
+    return native_m * _decimation_factor(target_m, native_m)
+
+
+def _global_native_m(ds: rasterio.DatasetReader) -> float:
+    return math.radians(180.0 / ds.height) * MOON_RADIUS_M
+
+
+def _sample_polar_at(lat: np.ndarray, lon: np.ndarray, target_m: float) -> tuple[np.ndarray, str | None, float | None]:
+    """Polar DEM samples for the spacing target_m: (elevations, tier, effective resolution)."""
+    ds, tier = _pick_polar_dataset(target_m)
     if ds is None:
-        return np.full(lat.shape, np.nan), None
+        return np.full(lat.shape, np.nan), None, None
+    native = abs(float(ds.transform.a))
     x, y = _polar_xy(lat, lon)
     col_f, row_f = (~ds.transform) * (x, y)
     u = np.asarray(col_f, dtype=np.float64) - 0.5
     v = np.asarray(row_f, dtype=np.float64) - 0.5
-    factor = _decimation_factor(target, abs(float(ds.transform.a)))
+    factor = _decimation_factor(target_m, native)
     scale, offset = _scale_and_offset(ds)
-    return _sample_decimated(ds, u, v, factor, scale, offset), tier
+    return _sample_decimated(ds, u, v, factor, scale, offset), tier, native * factor
+
+
+def _sample_polar(lat: np.ndarray, lon: np.ndarray, z: int) -> tuple[np.ndarray, str | None]:
+    elev, tier, _ = _sample_polar_at(lat, lon, _tile_ground_resolution_m(z))
+    return elev, tier
+
+
+def _sample_global_at(lat: np.ndarray, lon: np.ndarray, target_m: float) -> tuple[np.ndarray, float | None]:
+    """Global DEM samples for 1D lat/lon arrays: (elevations, effective resolution)."""
+    ds = _get_global_dataset()
+    if ds is None or lat.size == 0:
+        return np.full(lat.shape, np.nan), None
+    u, v, wrap_x = _global_latlon_to_uv(ds, lat, lon)
+    native_m = _global_native_m(ds)
+    factor = _decimation_factor(target_m, native_m)
+    scale, offset = _scale_and_offset(ds, is_global=True)
+    return _sample_decimated(ds, u, v, factor, scale, offset, wrap_x=wrap_x), native_m * factor
 
 
 def _sample_global(lat: np.ndarray, lon: np.ndarray, z: int) -> np.ndarray:
     """Global DEM samples for 1D lat/lon arrays (only the pixels the polar DEM left empty)."""
-    ds = _get_global_dataset()
-    if ds is None or lat.size == 0:
-        return np.full(lat.shape, np.nan)
-    u, v, wrap_x = _global_latlon_to_uv(ds, lat, lon)
-    native_m = math.radians(180.0 / ds.height) * MOON_RADIUS_M
-    factor = _decimation_factor(_tile_ground_resolution_m(z), native_m)
-    scale, offset = _scale_and_offset(ds, is_global=True)
-    return _sample_decimated(ds, u, v, factor, scale, offset, wrap_x=wrap_x)
+    return _sample_global_at(lat, lon, _tile_ground_resolution_m(z))[0]
+
+
+def _source_label(tier: str | None, used_polar: bool, used_global: bool) -> str:
+    if used_polar and used_global:
+        return f"lola_polar_{tier.lower()}+lola_global"
+    if used_polar:
+        return f"lola_polar_{tier.lower()}"
+    return "lola_global"
+
+
+def _elevations(lat: np.ndarray, lon: np.ndarray, target_m: float, label: str) -> tuple[np.ndarray, str, float]:
+    """Elevations (metres) at lat/lon for a sample spacing, a source label and the coarsest
+    effective resolution among the DEMs used. Raises TileUnavailableError on any gap."""
+    elev, tier, polar_res = _sample_polar_at(lat, lon, target_m)
+    used_polar = bool(np.any(np.isfinite(elev)))
+
+    missing = ~np.isfinite(elev)
+    used_global, global_res = False, None
+    if np.any(missing):
+        global_elev, global_res = _sample_global_at(lat[missing], lon[missing], target_m)
+        elev[missing] = global_elev
+        used_global = bool(np.any(np.isfinite(global_elev)))
+
+    if not np.all(np.isfinite(elev)):
+        raise TileUnavailableError(f"The LOLA DEMs on the server do not cover tile {label} (global DEM missing?)")
+
+    resolutions = [r for r, used in ((polar_res, used_polar), (global_res, used_global)) if used and r]
+    return elev, _source_label(tier, used_polar, used_global), max(resolutions)
 
 
 def tile_elevations(z: int, row: int, col: int) -> tuple[np.ndarray, str]:
@@ -251,28 +336,159 @@ def tile_elevations(z: int, row: int, col: int) -> tuple[np.ndarray, str]:
     DEMs on the server do not cover every pixel of the tile.
     """
     lat, lon = _tile_pixel_latlon(z, row, col)
-    elev, tier = _sample_polar(lat, lon, z)
-    used_polar = bool(np.any(np.isfinite(elev)))
-
-    missing = ~np.isfinite(elev)
-    used_global = False
-    if np.any(missing):
-        global_elev = _sample_global(lat[missing], lon[missing], z)
-        elev[missing] = global_elev
-        used_global = bool(np.any(np.isfinite(global_elev)))
-
-    if not np.all(np.isfinite(elev)):
-        raise TileUnavailableError(
-            f"The LOLA DEMs on the server do not cover tile {z}/{row}/{col} (global DEM missing?)"
-        )
-
-    if used_polar and used_global:
-        source = f"lola_polar_{tier.lower()}+lola_global"
-    elif used_polar:
-        source = f"lola_polar_{tier.lower()}"
-    else:
-        source = "lola_global"
+    elev, source, _ = _elevations(lat, lon, _tile_ground_resolution_m(z), f"{z}/{row}/{col}")
     return elev, source
+
+
+def heightmap_elevations(z: int, row: int, col: int) -> tuple[np.ndarray, str, float]:
+    """65 x 65 vertex-grid elevations (metres, row 0 = north edge), source label and resolution."""
+    lat, lon = _tile_vertex_latlon(z, row, col)
+    return _elevations(lat, lon, _vertex_spacing_m(z), f"heightmap {z}/{row}/{col}")
+
+
+# ---------------------------------------------------------------- hillshade
+
+
+def _polar_slopes(lat: np.ndarray, lon: np.ndarray, target_m: float) -> tuple[np.ndarray, np.ndarray, str | None, float | None]:
+    """East/north ground slopes (dz/ds) from the polar DEM, NaN where it lacks data.
+
+    Central differences one decimated cell away along the stereographic X and Y axes. The
+    projection is conformal with scale factor k = sec^2((90 + lat) / 2) (map metres per
+    ground metre), so the ground gradient is k times the map gradient, rotated into the
+    local East/North axes. Horizontal distances grow with height by (R + h) / R.
+    """
+    ds, tier = _pick_polar_dataset(target_m)
+    if ds is None:
+        nan = np.full(lat.shape, np.nan)
+        return nan, nan.copy(), None, None
+    native = abs(float(ds.transform.a))
+    factor = _decimation_factor(target_m, native)
+    step = native * factor
+    x, y = _polar_xy(lat, lon)
+    xs = np.concatenate([(x + step).ravel(), (x - step).ravel(), x.ravel(), x.ravel()])
+    ys = np.concatenate([y.ravel(), y.ravel(), (y + step).ravel(), (y - step).ravel()])
+    col_f, row_f = (~ds.transform) * (xs, ys)
+    scale, offset = _scale_and_offset(ds)
+    vals = _sample_decimated(
+        ds, np.asarray(col_f, dtype=np.float64) - 0.5, np.asarray(row_f, dtype=np.float64) - 0.5, factor, scale, offset
+    ).reshape((4,) + lat.shape)
+    gx = (vals[0] - vals[1]) / (2.0 * step)
+    gy = (vals[2] - vals[3]) / (2.0 * step)
+    k = 1.0 / np.cos(np.radians((90.0 + lat) * 0.5)) ** 2
+    lam = np.radians(lon)
+    # East = (cos lon, -sin lon) and North = (sin lon, cos lon) in stereographic X/Y.
+    corr = k * MOON_RADIUS_M / (MOON_RADIUS_M + vals.mean(axis=0))
+    d_east = corr * (gx * np.cos(lam) - gy * np.sin(lam))
+    d_north = corr * (gx * np.sin(lam) + gy * np.cos(lam))
+    return d_east, d_north, tier, step
+
+
+def _global_slopes(lat: np.ndarray, lon: np.ndarray, target_m: float) -> tuple[np.ndarray, np.ndarray, float | None]:
+    """East/north ground slopes from the global DEM for 1D lat/lon arrays.
+
+    Central differences one decimated cell away in latitude; in longitude the step widens
+    by 1 / cos(lat) so both span the same ground distance (capped at 180 deg near the poles,
+    where the east difference then vanishes and only the north slope remains).
+    """
+    ds = _get_global_dataset()
+    if ds is None or lat.size == 0:
+        nan = np.full(lat.shape, np.nan)
+        return nan, nan.copy(), None
+    native_m = _global_native_m(ds)
+    factor = _decimation_factor(target_m, native_m)
+    dlat = (180.0 / ds.height) * factor
+    coslat = np.cos(np.radians(lat))
+    dlon = np.minimum(dlat / np.maximum(coslat, 1e-12), 180.0)
+    lat_n = np.minimum(lat + dlat, 90.0)
+    lat_s = np.maximum(lat - dlat, -90.0)
+    lats = np.concatenate([lat, lat, lat_n, lat_s])
+    lons = np.concatenate([lon + dlon, lon - dlon, lon, lon])
+    u, v, wrap_x = _global_latlon_to_uv(ds, lats, lons)
+    scale, offset = _scale_and_offset(ds, is_global=True)
+    vals = _sample_decimated(ds, u, v, factor, scale, offset, wrap_x=wrap_x).reshape(4, lat.size)
+    corr = MOON_RADIUS_M / (MOON_RADIUS_M + vals.mean(axis=0))
+    east_run = 2.0 * MOON_RADIUS_M * coslat * np.radians(dlon)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        d_east = np.where(east_run > 1e-3, (vals[0] - vals[1]) / east_run, 0.0)
+        d_east = np.where(np.isfinite(vals[0]) & np.isfinite(vals[1]), d_east, np.nan)
+    d_north = (vals[2] - vals[3]) / (MOON_RADIUS_M * np.radians(lat_n - lat_s))
+    return corr * d_east, corr * d_north, native_m * factor
+
+
+def light_vector(light_lon_deg: float, light_lat_deg: float) -> np.ndarray:
+    """Unit vector (Moon body-fixed X = lon 0, Y = lon 90 E, Z = north) toward a distant light
+    that is overhead at (light_lat_deg, light_lon_deg)."""
+    phi, lam = math.radians(light_lat_deg), math.radians(light_lon_deg)
+    return np.array([math.cos(phi) * math.cos(lam), math.cos(phi) * math.sin(lam), math.sin(phi)])
+
+
+def lambert_shade(
+    lat: np.ndarray, lon: np.ndarray, d_east: np.ndarray, d_north: np.ndarray, light: np.ndarray, exaggeration: float = 1.0
+) -> np.ndarray:
+    """cos(incidence) in [0, 1] of a surface with ground slopes (d_east, d_north) at lat/lon."""
+    phi, lam = np.radians(lat), np.radians(lon)
+    sp, cp, sl, cl = np.sin(phi), np.cos(phi), np.sin(lam), np.cos(lam)
+    lx, ly, lz = light
+    # The light in each pixel's East/North/Up axes.
+    l_east = -sl * lx + cl * ly
+    l_north = -sp * cl * lx - sp * sl * ly + cp * lz
+    l_up = cp * cl * lx + cp * sl * ly + sp * lz
+    ge, gn = exaggeration * d_east, exaggeration * d_north
+    return np.clip((-ge * l_east - gn * l_north + l_up) / np.sqrt(ge * ge + gn * gn + 1.0), 0.0, 1.0)
+
+
+def hillshade_values(
+    z: int,
+    row: int,
+    col: int,
+    light_lon_deg: float = DEFAULT_LIGHT_LON_DEG,
+    light_lat_deg: float = DEFAULT_LIGHT_LAT_DEG,
+    exaggeration: float = 1.0,
+) -> tuple[np.ndarray, str, float]:
+    """Shade (256 x 256 in [0, 1], row 0 = north), source label and resolution for one tile."""
+    lat, lon = _tile_pixel_latlon(z, row, col)
+    target = _tile_ground_resolution_m(z)
+    d_east, d_north, tier, polar_res = _polar_slopes(lat, lon, target)
+    ok = np.isfinite(d_east) & np.isfinite(d_north)
+    used_polar = bool(np.any(ok))
+    used_global, global_res = False, None
+    if not np.all(ok):
+        missing = ~ok
+        g_east, g_north, global_res = _global_slopes(lat[missing], lon[missing], target)
+        d_east[missing], d_north[missing] = g_east, g_north
+        used_global = bool(np.any(np.isfinite(g_east) & np.isfinite(g_north)))
+    if not (np.all(np.isfinite(d_east)) and np.all(np.isfinite(d_north))):
+        raise TileUnavailableError(
+            f"The LOLA DEMs on the server do not cover hillshade tile {z}/{row}/{col} (global DEM missing?)"
+        )
+    shade = lambert_shade(lat, lon, d_east, d_north, light_vector(light_lon_deg, light_lat_deg), exaggeration)
+    resolutions = [r for r, used in ((polar_res, used_polar), (global_res, used_global)) if used and r]
+    return shade, _source_label(tier, used_polar, used_global), max(resolutions)
+
+
+def fade_alpha(lat: np.ndarray, fade_start_lat: float, fade_end_lat: float) -> np.ndarray:
+    """Opacity in [0, 1]: 0 at fade_start_lat, 1 at fade_end_lat, linear in latitude between them."""
+    return np.clip((lat - fade_start_lat) / (fade_end_lat - fade_start_lat), 0.0, 1.0)
+
+
+# ---------------------------------------------------------------- encoding
+
+
+def _encode_png(pixels: np.ndarray) -> bytes:
+    """Encode an (H, W, C) uint8 array as PNG: C = 1 gray, 2 gray + alpha, 3 RGB."""
+    color_type = {1: 0, 2: 4, 3: 2}[pixels.shape[2]]
+    height, width, channels = pixels.shape
+    rows = pixels.reshape(height, width * channels)
+    # PNG "Up" filter (type 2): terrain rows are similar, so the deltas compress well.
+    prev = np.vstack([np.zeros((1, width * channels), dtype=np.uint8), rows[:-1]])
+    filtered = (rows.astype(np.int16) - prev.astype(np.int16)).astype(np.uint8)
+    raw = np.hstack([np.full((height, 1), 2, dtype=np.uint8), filtered]).tobytes()
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)  # 8-bit, no interlace
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
 
 
 def encode_terrarium_png(elevations_m: np.ndarray) -> bytes:
@@ -286,19 +502,26 @@ def encode_terrarium_png(elevations_m: np.ndarray) -> bytes:
     rgb[..., 0] = (scaled >> 16) & 0xFF
     rgb[..., 1] = (scaled >> 8) & 0xFF
     rgb[..., 2] = scaled & 0xFF
+    return _encode_png(rgb)
 
-    height, width = elev.shape
-    rows = rgb.reshape(height, width * 3)
-    # PNG "Up" filter (type 2): terrain rows are similar, so the deltas compress well.
-    prev = np.vstack([np.zeros((1, width * 3), dtype=np.uint8), rows[:-1]])
-    filtered = (rows.astype(np.int16) - prev.astype(np.int16)).astype(np.uint8)
-    raw = np.hstack([np.full((height, 1), 2, dtype=np.uint8), filtered]).tobytes()
 
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+def encode_heightmap(elevations_m: np.ndarray) -> bytes:
+    """Little-endian float32 bytes, row 0 first, quantized to 1/256 m (exact in float32
+    below 65,536 m, and the low mantissa bits left at zero compress well)."""
+    q = np.round(np.asarray(elevations_m, dtype=np.float64) * 256.0) / 256.0
+    return q.astype("<f4").tobytes()
 
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit RGB, no interlace
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+
+def encode_hillshade_png(shade: np.ndarray, alpha: np.ndarray | None = None) -> bytes:
+    """8-bit gray PNG of shade in [0, 1]; gray + alpha when an opacity grid is given."""
+    gray = np.round(np.clip(shade, 0.0, 1.0) * 255.0).astype(np.uint8)
+    if alpha is None:
+        return _encode_png(gray[..., None])
+    a = np.round(np.clip(alpha, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return _encode_png(np.stack([gray, a], axis=-1))
+
+
+# ---------------------------------------------------------------- rendering and cache
 
 
 def dem_signature() -> tuple[tuple[str, int, int], ...]:
@@ -317,41 +540,134 @@ def dem_signature() -> tuple[tuple[str, int, int], ...]:
     return tuple(sig)
 
 
-def tile_etag(z: int, row: int, col: int, signature: tuple[Any, ...] | None = None) -> str:
-    """Strong ETag for a tile: depends on the tile index and on the DEM files on disk."""
+def tile_etag(
+    z: int,
+    row: int,
+    col: int,
+    signature: tuple[Any, ...] | None = None,
+    kind: str = "terrarium",
+    params: tuple[Any, ...] = (),
+) -> str:
+    """Strong ETag for a tile: depends on the product, its parameters, the tile index and on
+    the DEM files on disk. Terrarium tiles keep the ETag they had before the other products."""
     sig = dem_signature() if signature is None else signature
-    digest = hashlib.sha1(repr((z, row, col, sig)).encode()).hexdigest()[:20]
+    ident = (z, row, col, sig) if kind == "terrarium" and not params else (kind, z, row, col, params, sig)
+    digest = hashlib.sha1(repr(ident).encode()).hexdigest()[:20]
     return f'"{digest}"'
 
 
-_tile_cache: OrderedDict[tuple[Any, ...], tuple[bytes, str]] = OrderedDict()
+@dataclass(frozen=True)
+class RenderedTile:
+    body: bytes
+    media_type: str
+    source: str
+    resolution_m: float
+    etag: str
+
+
+_tile_cache: OrderedDict[tuple[Any, ...], tuple[bytes, str, float]] = OrderedDict()
+_tile_cache_bytes = 0
 _tile_cache_lock = threading.Lock()
 
+_MEDIA_TYPES = {"terrarium": "image/png", "heightmap": "application/octet-stream", "hillshade": "image/png"}
 
-def render_terrain_tile(z: int, row: int, col: int) -> tuple[bytes, str, str]:
-    """Terrarium PNG bytes, source label and ETag for a tile, with an in-process LRU cache.
 
-    The cache key includes the DEM signature, so replacing a raster invalidates it.
-    """
-    tile_bounds(z, row, col)  # validate before touching the disk
+def _hillshade_params(
+    light_lon: float, light_lat: float, exaggeration: float, fade_start_lat: float | None, fade_end_lat: float | None
+) -> tuple[Any, ...]:
+    """Validated parameters rounded to 0.01 (also the cache key, so near-identical requests share it)."""
+    if not -90.0 <= light_lat <= 90.0:
+        raise ValueError("light_lat must be between -90 and 90")
+    if not 0.1 <= exaggeration <= 20.0:
+        raise ValueError("exaggeration must be between 0.1 and 20")
+    if (fade_start_lat is None) != (fade_end_lat is None):
+        raise ValueError("fade_start_lat and fade_end_lat go together")
+    fade: tuple[float, float] | None = None
+    if fade_start_lat is not None and fade_end_lat is not None:
+        if not (-90.0 <= fade_start_lat <= 90.0 and -90.0 <= fade_end_lat <= 90.0):
+            raise ValueError("fade latitudes must be between -90 and 90")
+        fade = (round(fade_start_lat, 2), round(fade_end_lat, 2))
+        if fade[0] == fade[1]:
+            raise ValueError("fade_start_lat and fade_end_lat must differ")
+    return (round(light_lon % 360.0, 2) % 360.0, round(light_lat, 2), round(exaggeration, 2), fade)
+
+
+def _render(kind: str, z: int, row: int, col: int, params: tuple[Any, ...]) -> tuple[bytes, str, float]:
+    if kind == "terrarium":
+        lat, lon = _tile_pixel_latlon(z, row, col)
+        elev, source, res = _elevations(lat, lon, _tile_ground_resolution_m(z), f"{z}/{row}/{col}")
+        return encode_terrarium_png(elev), source, res
+    if kind == "heightmap":
+        elev, source, res = heightmap_elevations(z, row, col)
+        return encode_heightmap(elev), source, res
+    light_lon, light_lat, exaggeration, fade = params
+    shade, source, res = hillshade_values(z, row, col, light_lon, light_lat, exaggeration)
+    alpha = None
+    if fade is not None:
+        lat, _ = _tile_pixel_latlon(z, row, col)
+        alpha = fade_alpha(lat, *fade)
+    return encode_hillshade_png(shade, alpha), source, res
+
+
+def render_tile(
+    kind: str,
+    z: int,
+    row: int,
+    col: int,
+    *,
+    light_lon: float = DEFAULT_LIGHT_LON_DEG,
+    light_lat: float = DEFAULT_LIGHT_LAT_DEG,
+    exaggeration: float = 1.0,
+    fade_start_lat: float | None = None,
+    fade_end_lat: float | None = None,
+) -> RenderedTile:
+    """Render one tile product ("terrarium", "heightmap" or "hillshade"), with an in-process
+    LRU cache bounded in bytes. The cache key includes the DEM signature, so replacing a
+    raster invalidates it. Raises TileOutOfRangeError (also for invalid hillshade
+    parameters) or TileUnavailableError."""
+    if kind not in _MEDIA_TYPES:
+        raise ValueError(f"unknown tile product {kind!r}")
+    tile_bounds(z, row, col, MAX_HEIGHTMAP_LEVEL if kind == "heightmap" else MAX_TILE_LEVEL)
+    params: tuple[Any, ...] = ()
+    if kind == "hillshade":
+        try:
+            params = _hillshade_params(light_lon, light_lat, exaggeration, fade_start_lat, fade_end_lat)
+        except ValueError as exc:
+            raise TileOutOfRangeError(str(exc)) from exc
     sig = dem_signature()
-    etag = tile_etag(z, row, col, sig)
-    key = (z, row, col, sig)
+    etag = tile_etag(z, row, col, sig, kind, params)
+    key = (kind, z, row, col, params, sig)
     with _tile_cache_lock:
         hit = _tile_cache.get(key)
         if hit is not None:
             _tile_cache.move_to_end(key)
-            return hit[0], hit[1], etag
-    elev, source = tile_elevations(z, row, col)
-    png = encode_terrarium_png(elev)
+            return RenderedTile(hit[0], _MEDIA_TYPES[kind], hit[1], hit[2], etag)
+    body, source, res = _render(kind, z, row, col, params)
+    _cache_put(key, (body, source, res))
+    return RenderedTile(body, _MEDIA_TYPES[kind], source, res, etag)
+
+
+def _cache_put(key: tuple[Any, ...], value: tuple[bytes, str, float]) -> None:
+    global _tile_cache_bytes
     with _tile_cache_lock:
-        _tile_cache[key] = (png, source)
-        _tile_cache.move_to_end(key)
-        while len(_tile_cache) > _TILE_CACHE_SIZE:
-            _tile_cache.popitem(last=False)
-    return png, source, etag
+        old = _tile_cache.pop(key, None)
+        if old is not None:
+            _tile_cache_bytes -= len(old[0])
+        _tile_cache[key] = value
+        _tile_cache_bytes += len(value[0])
+        while _tile_cache_bytes > _TILE_CACHE_MAX_BYTES and len(_tile_cache) > 1:
+            _, dropped = _tile_cache.popitem(last=False)
+            _tile_cache_bytes -= len(dropped[0])
+
+
+def render_terrain_tile(z: int, row: int, col: int) -> tuple[bytes, str, str]:
+    """Terrarium PNG bytes, source label and ETag for a tile (see render_tile)."""
+    tile = render_tile("terrarium", z, row, col)
+    return tile.body, tile.source, tile.etag
 
 
 def clear_tile_cache() -> None:
+    global _tile_cache_bytes
     with _tile_cache_lock:
         _tile_cache.clear()
+        _tile_cache_bytes = 0
