@@ -27,6 +27,7 @@ EXPECTED_LOLA_FILES = (
 )
 
 EXPECTED_LOLA_GLOBAL_FILES = (
+    "ldem_256.tif",
     "ldem_64.tif",
 )
 
