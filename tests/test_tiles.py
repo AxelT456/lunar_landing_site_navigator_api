@@ -642,4 +642,146 @@ def test_tile_cache_is_bounded_in_bytes(data_dir: Path, monkeypatch: pytest.Monk
     for col in range(6):
         tiles.render_tile("heightmap", 2, 1, col)
     assert tiles._tile_cache_bytes <= 40_000
-    assert tiles._tile_cache_bytes == sum(len(v[0]) for v in tiles._tile_cache.values())
+    assert tiles._tile_cache_bytes == sum(v.nbytes for v in tiles._tile_cache.values())
+
+
+# ---------------------------------------------------------------- performance (phase 1)
+
+
+def reference_polar_slopes(lat: np.ndarray, lon: np.ndarray, target_m: float):
+    """The previous implementation: four decimated samples one step away around every pixel."""
+    ds, _ = tiles._pick_polar_dataset(target_m)
+    native = abs(float(ds.transform.a))
+    factor = tiles._decimation_factor(target_m, native)
+    step = native * factor
+    x, y = tiles._polar_xy(lat, lon)
+    xs = np.concatenate([(x + step).ravel(), (x - step).ravel(), x.ravel(), x.ravel()])
+    ys = np.concatenate([y.ravel(), y.ravel(), (y + step).ravel(), (y - step).ravel()])
+    col_f, row_f = (~ds.transform) * (xs, ys)
+    scale, offset = tiles._scale_and_offset(ds)
+    vals = tiles._sample_decimated(
+        ds, np.asarray(col_f) - 0.5, np.asarray(row_f) - 0.5, factor, scale, offset
+    ).reshape((4,) + lat.shape)
+    gx = (vals[0] - vals[1]) / (2.0 * step)
+    gy = (vals[2] - vals[3]) / (2.0 * step)
+    k = 1.0 / np.cos(np.radians((90.0 + lat) * 0.5)) ** 2
+    lam = np.radians(lon)
+    corr = k * tiles.MOON_RADIUS_M / (tiles.MOON_RADIUS_M + vals.mean(axis=0))
+    return corr * (gx * np.cos(lam) - gy * np.sin(lam)), corr * (gx * np.sin(lam) + gy * np.cos(lam))
+
+
+@pytest.mark.parametrize(
+    "tile",
+    [(3, 7, 4), (5, 31, 40), (6, 63, 100), (8, 255, 300), (7, 125, 20)],
+    ids=["z3-decimated-nearest", "z5-decimated-average", "z6", "z8-full-resolution", "z7-off-centre"],
+)
+def test_polar_slopes_equal_the_four_sample_reference(data_dir: Path, tile) -> None:
+    write_polar_dem(data_dir, res_m=640.0, half_m=352_000.0, surface=rough_polar_m)
+    lat, lon = tiles._tile_pixel_latlon(*tile)
+    target = tiles._tile_ground_resolution_m(tile[0])
+    d_east, d_north, tier, _ = tiles._polar_slopes(lat, lon, target)
+    ref_east, ref_north = reference_polar_slopes(lat, lon, target)
+    assert tier == "80MPP"
+    # Same pixels get a slope (the rest falls back to the global DEM).
+    assert np.array_equal(np.isfinite(d_east), np.isfinite(ref_east))
+    ok = np.isfinite(ref_east)
+    assert ok.sum() > 1000
+    scale = np.max(np.abs(np.concatenate([ref_east[ok], ref_north[ok]])))
+    assert np.max(np.abs(d_east[ok] - ref_east[ok])) <= 1e-9 * scale + 1e-12
+    assert np.max(np.abs(d_north[ok] - ref_north[ok])) <= 1e-9 * scale + 1e-12
+
+
+def test_polar_slopes_outside_the_raster_are_nan(data_dir: Path) -> None:
+    write_polar_dem(data_dir)
+    lat, lon = tiles._tile_pixel_latlon(*NORTH_TILE)
+    d_east, d_north, _, _ = tiles._polar_slopes(lat, lon, tiles._tile_ground_resolution_m(NORTH_TILE[0]))
+    assert np.all(np.isnan(d_east)) and np.all(np.isnan(d_north))
+
+
+def test_tile_renders_are_limited_and_shared(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+    import time
+
+    write_polar_dem(data_dir)
+    active, peak, calls = 0, 0, []
+    lock = threading.Lock()
+    real_render = tiles._render
+
+    def slow_render(*args):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            calls.append(args[:4])
+        time.sleep(0.05)
+        try:
+            return real_render(*args)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(tiles, "_render", slow_render)
+    monkeypatch.setattr(tiles, "_RENDER_SLOTS", threading.BoundedSemaphore(2))
+    jobs = [("heightmap", 8, 255, 300 + i % 4) for i in range(12)]  # 4 distinct tiles, 3 requests each
+    threads = [threading.Thread(target=tiles.render_tile, args=job) for job in jobs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak <= 2
+    assert sorted(calls) == sorted({job for job in jobs})  # each tile rendered once
+
+
+def test_heightmap_gzip_is_computed_once(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gzip
+
+    from app.routers import terrain as terrain_router
+
+    write_polar_dem(data_dir)
+    tile = tiles.render_tile("heightmap", *POLE_TILE)
+    assert tile.gzip_body is not None and gzip.decompress(tile.gzip_body) == tile.body
+    assert tiles.render_tile("terrarium", *POLE_TILE).gzip_body is None
+
+    def no_compress(*_args, **_kwargs):
+        raise AssertionError("the router compressed a heightmap again")
+
+    monkeypatch.setattr(terrain_router.gzip, "compress", no_compress)
+    with TestClient(app) as client:
+        r = client.get("/api/v1/terrain/tiles/heightmap/8/255/300.bin", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200 and r.headers["content-encoding"] == "gzip"
+    assert r.content == tile.body  # the test client decodes gzip
+
+
+def test_external_overviews_change_the_signature_and_reopen_the_dem(data_dir: Path) -> None:
+    from rasterio.enums import Resampling
+
+    from app.engine import terrain
+
+    write_global_dem(data_dir, rough=True, width=1440)
+    path = data_dir / "raw" / "lola_global" / "ldem_64.tif"
+    sig_before = tiles.dem_signature()
+    etag_before = tiles.render_tile("hillshade", *NORTH_TILE).etag
+    ds_before = terrain._get_global_dataset()
+    assert ds_before.overviews(1) == []
+    with rasterio.Env(TIFF_USE_OVR=True), rasterio.open(path, "r+") as dst:  # external: ldem_64.tif.ovr
+        dst.build_overviews([2, 4, 8], Resampling.average)
+    ovr = path.with_name(path.name + ".ovr")
+    assert ovr.is_file()
+    sig_after = tiles.dem_signature()
+    assert sig_after != sig_before and any(entry[0] == str(ovr) for entry in sig_after)
+    assert tiles.render_tile("hillshade", *NORTH_TILE).etag != etag_before
+    ds_after = terrain._get_global_dataset()
+    assert ds_after is not ds_before and ds_after.overviews(1) == [2, 4, 8]
+    ovr.unlink()
+    assert tiles.dem_signature() == sig_before  # back to the original ETags
+    assert terrain._get_global_dataset().overviews(1) == []
+
+
+def test_tile_settings_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("X_TILES_TEST", "7")
+    assert tiles._env_int("X_TILES_TEST", 4, 1) == 7
+    monkeypatch.setenv("X_TILES_TEST", "0")
+    assert tiles._env_int("X_TILES_TEST", 4, 1) == 1
+    monkeypatch.setenv("X_TILES_TEST", "many")
+    assert tiles._env_int("X_TILES_TEST", 4, 1) == 4
+    assert tiles._TILE_CACHE_MAX_BYTES == 192 * 1024 * 1024 or "TILE_CACHE_MAX_MB" in os.environ

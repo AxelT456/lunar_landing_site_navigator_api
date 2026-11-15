@@ -33,8 +33,10 @@ wraps around at +/-180 deg.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import math
+import os
 import struct
 import threading
 import zlib
@@ -72,7 +74,20 @@ DEFAULT_LIGHT_LAT_DEG = -22.0
 # Above this decimation factor, nearest-neighbour reads touch only the rows GDAL needs;
 # averaging would read every block of a very large window (low zoom levels).
 _AVERAGE_MAX_FACTOR = 8
-_TILE_CACHE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+# In-process tile cache. A globe session of the south pole needs ~100 MB of tiles.
+_TILE_CACHE_MAX_BYTES = _env_int("TILE_CACHE_MAX_MB", 192, 1) * 1024 * 1024
+# Tiles rendered at the same time. Rendering is numpy CPU work: more threads than cores only
+# add memory and contention, so the rest of the requests wait for a slot.
+_RENDER_SLOTS = threading.BoundedSemaphore(_env_int("TILE_RENDER_CONCURRENCY", 4, 1))
 
 
 class TileOutOfRangeError(ValueError):
@@ -201,10 +216,10 @@ def _sample_decimated(
     wr = vd - rr0
 
     r_lo, r_hi = int(rr0.min()), int(rr1.max())
-    cols = np.unique(np.concatenate((cc0, cc1)))
-    runs = _contiguous_runs(cols)
-    if not wrap_x and len(runs) > 1:
-        runs = [(runs[0][0], runs[-1][1])]
+    if wrap_x:
+        runs = _contiguous_runs(np.unique(np.concatenate((cc0, cc1))))
+    else:
+        runs = [(int(cc0.min()), int(cc1.max()))]  # one window; sorting the columns is not needed
 
     resampling = Resampling.average if f <= _AVERAGE_MAX_FACTOR else Resampling.nearest
     pieces = []
@@ -356,28 +371,88 @@ def _polar_slopes(lat: np.ndarray, lon: np.ndarray, target_m: float) -> tuple[np
     projection is conformal with scale factor k = sec^2((90 + lat) / 2) (map metres per
     ground metre), so the ground gradient is k times the map gradient, rotated into the
     local East/North axes. Horizontal distances grow with height by (R + h) / R.
+
+    The differences are taken once on the decimated grid (one cell = one step) and then
+    interpolated at each pixel. Bilinear interpolation is linear, so this equals sampling
+    the DEM four times around every pixel and differencing, with a single gather instead
+    of four (the hillshade's main cost). Only next to the raster border, where the edge
+    cells repeat, can the result differ slightly.
     """
     ds, tier = _pick_polar_dataset(target_m)
+    nan = np.full(lat.shape, np.nan)
     if ds is None:
-        nan = np.full(lat.shape, np.nan)
         return nan, nan.copy(), None, None
     native = abs(float(ds.transform.a))
-    factor = _decimation_factor(target_m, native)
-    step = native * factor
+    f = _decimation_factor(target_m, native)
+    while f > 1 and (ds.width // f < 2 or ds.height // f < 2):
+        f //= 2
+    step = native * f
     x, y = _polar_xy(lat, lon)
-    xs = np.concatenate([(x + step).ravel(), (x - step).ravel(), x.ravel(), x.ravel()])
-    ys = np.concatenate([y.ravel(), y.ravel(), (y + step).ravel(), (y - step).ravel()])
-    col_f, row_f = (~ds.transform) * (xs, ys)
+    col_f, row_f = (~ds.transform) * (x.ravel(), y.ravel())
+    u = np.asarray(col_f, dtype=np.float64) - 0.5
+    v = np.asarray(row_f, dtype=np.float64) - 0.5
+    # A pixel has a slope when its four neighbours one cell away (u +/- f, v +/- f) are on the raster.
+    with np.errstate(invalid="ignore"):
+        valid = (
+            np.isfinite(u) & np.isfinite(v)
+            & (u - f >= -0.5) & (u + f <= ds.width - 0.5)
+            & (v - f >= -0.5) & (v + f <= ds.height - 0.5)
+        )
+    if not np.any(valid):
+        return nan, nan.copy(), tier, step
+
+    nbx, nby = ds.width // f, ds.height // f
+    ud = np.clip((u[valid] + 0.5) / f - 0.5, 0.0, nbx - 1.0)
+    vd = np.clip((v[valid] + 0.5) / f - 0.5, 0.0, nby - 1.0)
+    c0, r0 = np.floor(ud).astype(np.int64), np.floor(vd).astype(np.int64)
+    wc, wr = ud - c0, vd - r0
+    # Cells around the pixels: one more on each side for the differences, one more on the
+    # high side for the bilinear neighbour.
+    c_lo, c_hi = max(int(c0.min()) - 1, 0), min(int(c0.max()) + 2, nbx - 1)
+    r_lo, r_hi = max(int(r0.min()) - 1, 0), min(int(r0.max()) + 2, nby - 1)
+    n_cols, n_rows = c_hi - c_lo + 1, r_hi - r_lo + 1
+    resampling = Resampling.average if f <= _AVERAGE_MAX_FACTOR else Resampling.nearest
+    with _RASTER_LOCK:
+        if ds.closed:
+            return nan, nan.copy(), tier, step
+        grid = ds.read(
+            1, window=Window(c_lo * f, r_lo * f, n_cols * f, n_rows * f), out_shape=(n_rows, n_cols), resampling=resampling
+        ).astype(np.float64)
+    nodata = ds.nodata
+    if nodata is not None and not (isinstance(nodata, float) and math.isnan(nodata)):
+        grid[grid == float(nodata)] = np.nan
     scale, offset = _scale_and_offset(ds)
-    vals = _sample_decimated(
-        ds, np.asarray(col_f, dtype=np.float64) - 0.5, np.asarray(row_f, dtype=np.float64) - 0.5, factor, scale, offset
-    ).reshape((4,) + lat.shape)
-    gx = (vals[0] - vals[1]) / (2.0 * step)
-    gy = (vals[2] - vals[3]) / (2.0 * step)
+    if scale != 1.0 or offset != 0.0:
+        grid = grid * scale + offset
+
+    padded = np.pad(grid, 1, mode="edge")  # the edge cells repeat, like the clamped samples
+    east_w, east_e = padded[1:-1, :-2], padded[1:-1, 2:]
+    north_s, north_n = padded[2:, 1:-1], padded[:-2, 1:-1]  # row 0 = +Y
+    gx_grid = east_e - east_w
+    gy_grid = north_n - north_s
+    mean_grid = (east_e + east_w + north_n + north_s) * 0.25
+
+    a0, b0 = c0 - c_lo, r0 - r_lo
+    a1, b1 = np.minimum(a0 + 1, n_cols - 1), np.minimum(b0 + 1, n_rows - 1)
+    if np.isfinite(grid).all():
+        w00, w01, w10, w11 = (1.0 - wc) * (1.0 - wr), wc * (1.0 - wr), (1.0 - wc) * wr, wc * wr
+
+        def interp(g: np.ndarray) -> np.ndarray:
+            return g[b0, a0] * w00 + g[b0, a1] * w01 + g[b1, a0] * w10 + g[b1, a1] * w11
+    else:
+
+        def interp(g: np.ndarray) -> np.ndarray:
+            return _bilinear_blend(g[b0, a0], g[b0, a1], g[b1, a0], g[b1, a1], wc, wr)
+
+    gx, gy, mean = nan.ravel().copy(), nan.ravel().copy(), nan.ravel().copy()
+    gx[valid] = interp(gx_grid) / (2.0 * step)
+    gy[valid] = interp(gy_grid) / (2.0 * step)
+    mean[valid] = interp(mean_grid)
+    gx, gy, mean = gx.reshape(lat.shape), gy.reshape(lat.shape), mean.reshape(lat.shape)
     k = 1.0 / np.cos(np.radians((90.0 + lat) * 0.5)) ** 2
     lam = np.radians(lon)
     # East = (cos lon, -sin lon) and North = (sin lon, cos lon) in stereographic X/Y.
-    corr = k * MOON_RADIUS_M / (MOON_RADIUS_M + vals.mean(axis=0))
+    corr = k * MOON_RADIUS_M / (MOON_RADIUS_M + mean)
     d_east = corr * (gx * np.cos(lam) - gy * np.sin(lam))
     d_north = corr * (gx * np.sin(lam) + gy * np.cos(lam))
     return d_east, d_north, tier, step
@@ -525,18 +600,20 @@ def encode_hillshade_png(shade: np.ndarray, alpha: np.ndarray | None = None) -> 
 
 
 def dem_signature() -> tuple[tuple[str, int, int], ...]:
-    """(path, mtime_ns, size) of every DEM a tile may read: changes when a raster is replaced."""
+    """(path, mtime_ns, size) of every DEM a tile may read, and of its external overviews
+    (<dem>.ovr) when present: changes when a raster or its overviews are replaced."""
     paths: list[Path | None] = [_find_lola_file(dem_name) for _, dem_name, _ in POLAR_TIERS]
     paths.append(_find_global_dem_file())
     sig = []
     for path in paths:
         if path is None:
             continue
-        try:
-            st = path.stat()
-        except OSError:
-            continue
-        sig.append((str(path), st.st_mtime_ns, st.st_size))
+        for candidate in (path, path.with_name(path.name + ".ovr")):
+            try:
+                st = candidate.stat()
+            except OSError:
+                continue
+            sig.append((str(candidate), st.st_mtime_ns, st.st_size))
     return tuple(sig)
 
 
@@ -563,11 +640,27 @@ class RenderedTile:
     source: str
     resolution_m: float
     etag: str
+    gzip_body: bytes | None = None  # heightmaps: the body already gzipped, for clients that accept it
 
 
-_tile_cache: OrderedDict[tuple[Any, ...], tuple[bytes, str, float]] = OrderedDict()
+@dataclass(frozen=True)
+class _CachedTile:
+    body: bytes
+    source: str
+    resolution_m: float
+    gzip_body: bytes | None
+
+    @property
+    def nbytes(self) -> int:
+        return len(self.body) + len(self.gzip_body or b"")
+
+
+_tile_cache: OrderedDict[tuple[Any, ...], _CachedTile] = OrderedDict()
 _tile_cache_bytes = 0
 _tile_cache_lock = threading.Lock()
+# Tiles being rendered: key -> [lock held while rendering, requests waiting or rendering].
+_inflight: dict[tuple[Any, ...], list[Any]] = {}
+_inflight_lock = threading.Lock()
 
 _MEDIA_TYPES = {"terrarium": "image/png", "heightmap": "application/octet-stream", "hillshade": "image/png"}
 
@@ -623,8 +716,9 @@ def render_tile(
 ) -> RenderedTile:
     """Render one tile product ("terrarium", "heightmap" or "hillshade"), with an in-process
     LRU cache bounded in bytes. The cache key includes the DEM signature, so replacing a
-    raster invalidates it. Raises TileOutOfRangeError (also for invalid hillshade
-    parameters) or TileUnavailableError."""
+    raster invalidates it. At most TILE_RENDER_CONCURRENCY tiles render at once; cache hits
+    never wait. Raises TileOutOfRangeError (also for invalid hillshade parameters) or
+    TileUnavailableError."""
     if kind not in _MEDIA_TYPES:
         raise ValueError(f"unknown tile product {kind!r}")
     tile_bounds(z, row, col, MAX_HEIGHTMAP_LEVEL if kind == "heightmap" else MAX_TILE_LEVEL)
@@ -637,27 +731,55 @@ def render_tile(
     sig = dem_signature()
     etag = tile_etag(z, row, col, sig, kind, params)
     key = (kind, z, row, col, params, sig)
+    hit = _cache_get(key)
+    if hit is None:
+        hit = _render_once(key, kind, z, row, col, params)
+    return RenderedTile(hit.body, _MEDIA_TYPES[kind], hit.source, hit.resolution_m, etag, hit.gzip_body)
+
+
+def _render_once(key: tuple[Any, ...], kind: str, z: int, row: int, col: int, params: tuple[Any, ...]) -> _CachedTile:
+    """Render a tile in one of the render slots. Identical requests in flight wait for the
+    first one and take its result from the cache instead of rendering it again."""
+    with _inflight_lock:
+        entry = _inflight.setdefault(key, [threading.Lock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            hit = _cache_get(key)
+            if hit is not None:
+                return hit
+            with _RENDER_SLOTS:
+                body, source, res = _render(kind, z, row, col, params)
+            gz = gzip.compress(body, compresslevel=6, mtime=0) if kind == "heightmap" else None
+            hit = _CachedTile(body, source, res, gz)
+            _cache_put(key, hit)
+            return hit
+    finally:
+        with _inflight_lock:
+            entry[1] -= 1
+            if entry[1] == 0:
+                _inflight.pop(key, None)
+
+
+def _cache_get(key: tuple[Any, ...]) -> _CachedTile | None:
     with _tile_cache_lock:
         hit = _tile_cache.get(key)
         if hit is not None:
             _tile_cache.move_to_end(key)
-            return RenderedTile(hit[0], _MEDIA_TYPES[kind], hit[1], hit[2], etag)
-    body, source, res = _render(kind, z, row, col, params)
-    _cache_put(key, (body, source, res))
-    return RenderedTile(body, _MEDIA_TYPES[kind], source, res, etag)
+        return hit
 
 
-def _cache_put(key: tuple[Any, ...], value: tuple[bytes, str, float]) -> None:
+def _cache_put(key: tuple[Any, ...], value: _CachedTile) -> None:
     global _tile_cache_bytes
     with _tile_cache_lock:
         old = _tile_cache.pop(key, None)
         if old is not None:
-            _tile_cache_bytes -= len(old[0])
+            _tile_cache_bytes -= old.nbytes
         _tile_cache[key] = value
-        _tile_cache_bytes += len(value[0])
+        _tile_cache_bytes += value.nbytes
         while _tile_cache_bytes > _TILE_CACHE_MAX_BYTES and len(_tile_cache) > 1:
             _, dropped = _tile_cache.popitem(last=False)
-            _tile_cache_bytes -= len(dropped[0])
+            _tile_cache_bytes -= dropped.nbytes
 
 
 def render_terrain_tile(z: int, row: int, col: int) -> tuple[bytes, str, str]:
