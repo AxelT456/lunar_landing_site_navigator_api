@@ -93,10 +93,12 @@ def make_ephemeris_cache_key(
 ) -> str:
     """Build deterministic ephemeris_cache key covering all mission inputs.
 
-    The version prefix changes whenever the cached payload changes shape (v2: `checks`).
+    The version prefix changes whenever the cached payload or its inputs change
+    (v2: `checks`; v3: rise times in the summary, and results computed with the
+    20 m polar / 118 m global DEMs instead of the coarser ones cached under v2).
     """
     return (
-        f"v2|{round(lat, 4):.4f}|{round(lon, 4):.4f}|{start_utc}|"
+        f"v3|{round(lat, 4):.4f}|{round(lon, 4):.4f}|{start_utc}|"
         f"{duration_days:g}|{step_minutes}|{panel_efficiency:g}|{panel_area_m2:g}"
     )
 

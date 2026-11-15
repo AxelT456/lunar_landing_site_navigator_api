@@ -158,19 +158,44 @@ class EvaluateSiteInfo(BaseModel):
     )
 
 
+_FIRST_CHANGE = (
+    "Counted from the window start to the first sample already in the new state; the real event "
+    "is up to one step earlier. null when that change does not happen inside the window."
+)
+
+
 class EvaluateSummary(BaseModel):
-    """Aggregated solar power and Direct-to-Earth communication metrics."""
+    """Aggregated solar power and Direct-to-Earth communication metrics.
+
+    A body is visible when the center of its disk is above the local terrain horizon.
+    """
 
     sun_visible_pct: float
     earth_visible_pct: float
     max_continuous_sun_hours: float
     max_continuous_dte_hours: float
-    next_sunset_utc: str | None = None
-    hours_to_next_sunset: float | None = None
-    next_earthset_utc: str | None = None
-    hours_to_next_earthset: float | None = None
-    avg_power_factor: float
-    estimated_peak_power_w: float
+    next_sunset_utc: str | None = Field(None, description="First visible-to-hidden change of the Sun. " + _FIRST_CHANGE)
+    hours_to_next_sunset: float | None = Field(None, description="Hours to `next_sunset_utc`. " + _FIRST_CHANGE)
+    next_earthset_utc: str | None = Field(None, description="First visible-to-hidden change of the Earth. " + _FIRST_CHANGE)
+    hours_to_next_earthset: float | None = Field(None, description="Hours to `next_earthset_utc`. " + _FIRST_CHANGE)
+    sun_visible_at_start: bool | None = Field(None, description="Sun visible at the first sample (v1.4)")
+    earth_visible_at_start: bool | None = Field(None, description="Earth visible at the first sample (v1.4)")
+    next_sunrise_utc: str | None = Field(None, description="First hidden-to-visible change of the Sun (v1.4). " + _FIRST_CHANGE)
+    hours_to_next_sunrise: float | None = Field(None, description="Hours to `next_sunrise_utc` (v1.4). " + _FIRST_CHANGE)
+    next_earthrise_utc: str | None = Field(
+        None, description="First hidden-to-visible change of the Earth (v1.4). " + _FIRST_CHANGE
+    )
+    hours_to_next_earthrise: float | None = Field(None, description="Hours to `next_earthrise_utc` (v1.4). " + _FIRST_CHANGE)
+    avg_power_factor: float = Field(
+        ..., description="Mean of the timeline `power_factor` over every step of the window, zeros included"
+    )
+    estimated_peak_power_w: float = Field(
+        ...,
+        description=(
+            "Highest power_factor x panel_efficiency x panel_area_m2 x 1361 / r_au^2 in the window "
+            "(irradiance at the real Sun distance, so it can exceed the 1 AU nominal)"
+        ),
+    )
 
 
 class HorizonPoint(BaseModel):
@@ -194,7 +219,14 @@ class TimelinePoint(BaseModel):
     earth_horizon_el_deg: float
     earth_visible: bool
     earth_vector_3d: list[float] = Field(..., min_length=3, max_length=3)
-    power_factor: float
+    power_factor: float = Field(
+        ...,
+        description=(
+            "Share of the maximum output of a vertical solar panel that tracks the Sun's azimuth: "
+            "cos(sun_el) x visible fraction of the solar disk above the terrain (0.5 with the disk "
+            "center on the crest); 0 when the Sun is hidden"
+        ),
+    )
 
 
 class EvaluateResponse(BaseModel):
