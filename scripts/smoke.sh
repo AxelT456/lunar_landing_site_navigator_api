@@ -2,7 +2,7 @@
 # Smoke tests against a deployed API. Usage: BASE=http://host:8000/api/v1 scripts/smoke.sh
 set -eu
 
-: "${BASE:?set BASE, e.g. http://spaceapps-api-staging:8000/api/v1}"
+: "${BASE:?set BASE, e.g. http://spaceapps-api-prod:8000/api/v1}"
 fail=0
 
 # expect <name> <expected status> <curl args...>

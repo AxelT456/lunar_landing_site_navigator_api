@@ -74,4 +74,4 @@ Tests that need the real NASA datasets are skipped unless they are present in `D
 
 ## Deploy
 
-See `docs/DEPLOY.md` (Woodpecker CI → staging on merge, production by promotion).
+See `docs/DEPLOY.md` (Woodpecker CI: every merge to `main` that passes CI goes to production).
