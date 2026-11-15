@@ -108,6 +108,7 @@ The tiles answer handoff `P-008` (decision D-016) and follow the Moon Trek / Ces
 - **Rendering.**
   - Up to `TILE_RENDER_CONCURRENCY` tiles render at once. The rest wait, and identical requests in flight share one render.
   - Rendered tiles stay in an in-process cache of `TILE_CACHE_MAX_MB`, with heightmaps already gzipped.
+  - Optional warm-up (`TILE_WARMUP=1`): after startup each worker renders, in one low-priority background thread, the tiles the globe asks for first (rings around the south pole up to `z` 7, heightmap and hillshade with the globe's parameters). It never blocks requests or `/health`; see `app/engine/tile_warmup.py` for its settings.
 - **Headers.**
   - `X-Terrain-Source` and `X-Terrain-Resolution-M`: the DEM actually read and its spacing. Both are exposed to browsers through CORS.
   - `ETag`: changes when a DEM file is replaced. `If-None-Match` answers `304`.
@@ -191,6 +192,7 @@ How to load and reload it locally: [`db/README.md`](db/README.md).
 | `DATA_DIR` | Root of the NASA datasets (default `/data`): `raw/lola/`, `raw/lola_global/`, `raw/spice/`. Without them the engine uses synthetic terrain and JPL Horizons / analytical ephemerides. That is fine for development, not for real results. |
 | `TILE_CACHE_MAX_MB` | Size of the in-process terrain tile cache, per process (default `192`). A south pole globe session needs about 100 MB. |
 | `TILE_RENDER_CONCURRENCY` | Terrain tiles rendered at the same time per process (default `4`). Rendering is CPU work: a higher value only adds memory and contention. |
+| `TILE_WARMUP` | `1` renders the globe's first tiles in the background after startup (default off). Settings: `TILE_WARMUP_MAX_LEVEL` (7), `TILE_WARMUP_PER_LEVEL` (512), `TILE_WARMUP_LAT` (-60), `TILE_WARMUP_KINDS` (`heightmap,hillshade`), `TILE_WARMUP_HILLSHADE` (the globe's query). |
 | `WEB_CONCURRENCY` | Uvicorn worker processes (default `1`). Each one loads its own DEM handles and caches. The desktop server uses `2` (`docs/DEPLOY.md`). |
 
 The Docker image also sets `GDAL_CACHEMAX=256` (MB). Without it, GDAL's block cache takes 5% of the host RAM.

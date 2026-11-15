@@ -55,6 +55,7 @@ is never committed: it holds the database credentials.
 | `DATABASE_URL` | `postgresql://spaceapps:<server-password>@spaceapps-postgres:5432/spaceapps` | PostGIS on `spaceapps-net` |
 | `DATA_DIR` | `/data` (`/srv/spaceapps/data` mounted read-only) | NASA datasets |
 | `WEB_CONCURRENCY` | `2` (since 2026-11-15) | Uvicorn worker processes; Uvicorn reads it as the default of `--workers` (1 when unset) |
+| `TILE_WARMUP` | not set (off) | `1`: each worker renders the globe's first tiles after startup (see below) |
 
 ### Why two workers
 
@@ -76,6 +77,20 @@ Costs:
 - **Free RAM matters as much:** the DEMs (`ldem_256.tif` 2.8 GB, the 20 m polar
   DEM 2.5 GB) are read through the page cache, which shares the host memory
   with every other container. Raise workers only with memory to spare.
+
+### Tile warm-up (optional)
+
+Every deploy empties the in-process tile caches. With `TILE_WARMUP=1` each
+worker renders 2,636 tiles in the background after startup (rings around the
+south pole up to `z` 7, heightmap and hillshade with the globe's parameters;
+hillshade only south of its `fade_start_lat`, where the globe shows it), in one
+low-priority thread that uses a single render slot. Measured on 2026-11-15 on
+the server, with two workers and `ldem_256.tif.ovr`: 19 s per worker, `/health`
+unaffected, and the recorded browser session right after a restart went from
+15.1 s to 12.1 s (`z` 0-3 ready in 0.1 s instead of 0.6 s).
+Closer views (`z` 8-10) depend on where each visitor looks and still render on
+demand. Memory: the caches fill from the start (about 0.5 GiB with two workers
+after the warm-up). The line goes in the same `.env`; remove it to turn it off.
 
 ### Changing or reverting it
 
