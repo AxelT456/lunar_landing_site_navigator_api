@@ -35,7 +35,7 @@ gdal() { docker run --rm -u "$(id -u):$(id -g)" -v "$SRC:/in:ro" -v "$OUT_DIR:/o
 # mosaics them exactly; its pixel grid is 256 px/deg over 0..360 x -90..90.
 gdal gdalbuildvrt -q "/out/.$NAME.vrt" /in/LDEM_256_00N_90N_000_180.LBL /in/LDEM_256_00N_90N_180_360.LBL \
   /in/LDEM_256_90S_00S_000_180.LBL /in/LDEM_256_90S_00S_180_360.LBL
-gdal gdal_translate -q \
+gdal gdal_translate -q -of GTiff \
   -a_srs "+proj=longlat +R=1737400 +no_defs +type=crs" -a_ullr 0 90 360 -90 \
   -a_scale 0.5 -a_offset 0 \
   -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 \
