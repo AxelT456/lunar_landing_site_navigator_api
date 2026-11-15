@@ -191,6 +191,7 @@ How to load and reload it locally: [`db/README.md`](db/README.md).
 | `DATA_DIR` | Root of the NASA datasets (default `/data`): `raw/lola/`, `raw/lola_global/`, `raw/spice/`. Without them the engine uses synthetic terrain and JPL Horizons / analytical ephemerides. That is fine for development, not for real results. |
 | `TILE_CACHE_MAX_MB` | Size of the in-process terrain tile cache, per process (default `192`). A south pole globe session needs about 100 MB. |
 | `TILE_RENDER_CONCURRENCY` | Terrain tiles rendered at the same time per process (default `4`). Rendering is CPU work: a higher value only adds memory and contention. |
+| `WEB_CONCURRENCY` | Uvicorn worker processes (default `1`). Each one loads its own DEM handles and caches. The desktop server uses `2` (`docs/DEPLOY.md`). |
 
 The Docker image also sets `GDAL_CACHEMAX=256` (MB). Without it, GDAL's block cache takes 5% of the host RAM.
 
