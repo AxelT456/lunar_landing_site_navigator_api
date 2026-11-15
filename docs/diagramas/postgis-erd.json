@@ -1,0 +1,283 @@
+{
+ "schema_version": 1,
+ "diagram_type": "erd",
+ "meta": {
+  "title": "Esquema PostGIS de la API Lunar Landing Site Navigator",
+  "locale": "es",
+  "output": "docs/diagramas/postgis-erd.html",
+  "quality_profile": "showcase",
+  "repository": {
+   "url": "https://github.com/AxelT456/lunar_landing_site_navigator_api.git",
+   "revision": "a0cf97fbce7afe285c7a43fa31c29d155c067c32"
+  }
+ },
+ "layout": {
+  "mode": "grid"
+ },
+ "entities": [
+  {
+   "id": "landing_sites",
+   "label": "landing_sites",
+   "sublabel": "13 filas en el seed",
+   "tag": "Catálogo de referencia",
+   "row": 0,
+   "col": 0,
+   "attributes": [
+    {
+     "name": "id",
+     "type": "integer NOT NULL｜serial landing_sites_id_seq",
+     "key": "pk"
+    },
+    {
+     "name": "slug",
+     "type": "text NOT NULL｜expuesto como id en /sites",
+     "key": "uk"
+    },
+    {
+     "name": "name",
+     "type": "text NOT NULL"
+    },
+    {
+     "name": "category",
+     "type": "text NOT NULL"
+    },
+    {
+     "name": "lat",
+     "type": "double precision NOT NULL"
+    },
+    {
+     "name": "lon",
+     "type": "double precision NOT NULL"
+    },
+    {
+     "name": "polar_x_m",
+     "type": "double precision NOT NULL"
+    },
+    {
+     "name": "polar_y_m",
+     "type": "double precision NOT NULL"
+    },
+    {
+     "name": "elevation_m",
+     "type": "double precision"
+    },
+    {
+     "name": "slope_deg",
+     "type": "double precision"
+    },
+    {
+     "name": "nearest_psr_km",
+     "type": "double precision"
+    },
+    {
+     "name": "description",
+     "type": "text"
+    },
+    {
+     "name": "is_curated",
+     "type": "boolean DEFAULT true｜filtro de /sites"
+    },
+    {
+     "name": "geom",
+     "type": "geometry(Point)｜índice GiST"
+    }
+   ],
+   "sources": [
+    {
+     "path": "db/README.md",
+     "line": 6,
+     "end_line": 8,
+     "label": "contenido"
+    },
+    {
+     "path": "app/db.py",
+     "line": 112,
+     "end_line": 136,
+     "label": "list_landing_sites"
+    },
+    {
+     "path": "db/init/20_im2_lroc_site.sql",
+     "line": 10,
+     "end_line": 19,
+     "label": "UPDATE IM-2"
+    }
+   ],
+   "width": 372
+  },
+  {
+   "id": "psr_regions",
+   "label": "psr_regions",
+   "sublabel": "1,531 filas en el seed",
+   "tag": "Catálogo de referencia",
+   "row": 1,
+   "col": 0,
+   "attributes": [
+    {
+     "name": "gid",
+     "type": "integer NOT NULL",
+     "key": "pk"
+    },
+    {
+     "name": "name",
+     "type": "text"
+    },
+    {
+     "name": "area_km2",
+     "type": "double precision"
+    },
+    {
+     "name": "geom",
+     "type": "geometry(MultiPolygon)｜SRID 0, índice GiST"
+    }
+   ],
+   "sources": [
+    {
+     "path": "db/README.md",
+     "line": 9,
+     "end_line": 9,
+     "label": "contenido"
+    },
+    {
+     "path": "app/db.py",
+     "line": 139,
+     "end_line": 229,
+     "label": "nearest / nearby"
+    },
+    {
+     "path": "app/db.py",
+     "line": 301,
+     "end_line": 344,
+     "label": "list_psrs"
+    }
+   ],
+   "width": 372
+  },
+  {
+   "id": "horizon_profiles",
+   "label": "horizon_profiles",
+   "sublabel": "caché, vacía en el seed",
+   "tag": "Cachés de cálculo",
+   "row": 0,
+   "col": 1,
+   "attributes": [
+    {
+     "name": "coord_key",
+     "type": "text NOT NULL｜lat,lon redondeados a 4",
+     "key": "pk"
+    },
+    {
+     "name": "lat",
+     "type": "double precision NOT NULL"
+    },
+    {
+     "name": "lon",
+     "type": "double precision NOT NULL"
+    },
+    {
+     "name": "profile_json",
+     "type": "jsonb NOT NULL｜360 azimuts"
+    },
+    {
+     "name": "created_at",
+     "type": "timestamptz DEFAULT now()"
+    }
+   ],
+   "sources": [
+    {
+     "path": "db/README.md",
+     "line": 10,
+     "end_line": 10,
+     "label": "contenido"
+    },
+    {
+     "path": "app/db.py",
+     "line": 232,
+     "end_line": 266,
+     "label": "get / save"
+    },
+    {
+     "path": "app/routers/_common.py",
+     "line": 80,
+     "end_line": 82,
+     "label": "coord_key"
+    }
+   ],
+   "width": 372
+  },
+  {
+   "id": "ephemeris_cache",
+   "label": "ephemeris_cache",
+   "sublabel": "caché, vacía en el seed",
+   "tag": "Cachés de cálculo",
+   "row": 1,
+   "col": 1,
+   "attributes": [
+    {
+     "name": "cache_key",
+     "type": "text NOT NULL｜v3|lat|lon|utc|…",
+     "key": "pk"
+    },
+    {
+     "name": "result_json",
+     "type": "jsonb NOT NULL｜summary + timeline"
+    },
+    {
+     "name": "created_at",
+     "type": "timestamptz DEFAULT now()"
+    }
+   ],
+   "sources": [
+    {
+     "path": "db/README.md",
+     "line": 11,
+     "end_line": 11,
+     "label": "contenido"
+    },
+    {
+     "path": "app/db.py",
+     "line": 269,
+     "end_line": 298,
+     "label": "get / save"
+    },
+    {
+     "path": "app/routers/_common.py",
+     "line": 85,
+     "end_line": 103,
+     "label": "cache_key v3"
+    }
+   ],
+   "width": 372
+  }
+ ],
+ "relationships": [],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Origen del esquema",
+   "items": [
+    "DDL tomado de db/init/10_seed.sql.gz (pg_dump de PostgreSQL 16.4): CREATE TABLE en las líneas 27–103, restricciones e índices en 1679–1726",
+    "00_extensions.sql crea la extensión postgis antes del seed; 20_im2_lroc_site.sql solo actualiza la fila clps-im2-mons-mouton con la coordenada LROC",
+    "Restricciones: PK en las cuatro tablas, UNIQUE (slug) en landing_sites, índices GiST en landing_sites.geom y psr_regions.geom"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Sin claves foráneas",
+   "items": [
+    "El esquema no declara ninguna FOREIGN KEY, por eso no hay líneas entre tablas",
+    "landing_sites y psr_regions se relacionan solo espacialmente: ST_Distance / <-> / ST_DWithin sobre geom en metros estereográficos polares (SRID 0)",
+    "nearest_psr_km está precalculado en el seed; /sites lo recalcula contra psr_regions solo si viene NULL",
+    "Las cachés se indexan por claves de texto derivadas de lat/lon y parámetros de misión, no por id de sitio"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "Uso desde app/db.py",
+   "items": [
+    "Lectura: landing_sites (WHERE is_curated = TRUE ORDER BY id) y psr_regions (KNN, radio, simplificación y GeoJSON)",
+    "Escritura: solo horizon_profiles y ephemeris_cache, con INSERT … ON CONFLICT DO UPDATE que renueva created_at",
+    "landing_sites.geom no lo lee ninguna consulta de app/db.py; /health cuenta filas de landing_sites y psr_regions"
+   ]
+  }
+ ]
+}
